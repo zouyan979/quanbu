@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>星空树洞 | The Starry Hollow</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            outline: none;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+
+        body {
+            background-color: #050714;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            color: white;
+            height: 100vh;
+            width: 100vw;
+            cursor: default;
+        }
+
+        #skyCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* --- 视图容器 --- */
+        .view-section {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            transition: opacity 1.5s cubic-bezier(0.22, 1, 0.36, 1), transform 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        .view-section.hidden {
+            opacity: 0;
+            pointer-events: none;
+            transform: scale(1.05);
+        }
+
+        .view-section.hidden * {
+            pointer-events: none !important;
+        }
+
+        /* --- 首页 (Landing View) --- */
+        #landing-view {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            background: rgba(5, 7, 20, 0.3);
+            z-index: 15;
+        }
+
+        .landing-title {
+            font-size: 3.5rem;
+            font-weight: 200;
+            letter-spacing: 10px;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px rgba(255,255,255,0.4);
+            background: linear-gradient(to bottom, #fff, #aab);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: fadeInDown 1.5s ease-out;
+        }
+
+        .landing-subtitle {
+            font-size: 1rem;
+            color: rgba(255,255,255,0.6);
+            letter-spacing: 4px;
+            margin-bottom: 60px;
+            font-weight: 300;
+            text-transform: uppercase;
+            animation: fadeInUp 1.5s ease-out 0.3s backwards;
+        }
+
+        .btn-enter {
+            padding: 15px 50px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 50px;
+            color: white;
+            font-size: 1.1rem;
+            letter-spacing: 2px;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            transition: all 0.5s ease;
+            position: relative;
+            overflow: hidden;
+            animation: fadeIn 2s ease-out 1s backwards;
+            z-index: 100;
+            pointer-events: auto !important;
+        }
+
+        .btn-enter::before {
+            content: '';
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 100%; height: 100%;
+            background: radial-gradient(circle, rgba(255,255,255,0.3) 0%, transparent 60%);
+            transform: translate(-50%, -50%) scale(0);
+            transition: transform 0.5s;
+            border-radius: 50%;
+        }
+
+        .btn-enter:hover {
+            background: rgba(255,255,255,0.15);
+            border-color: rgba(255,255,255,0.5);
+            box-shadow: 0 0 30px rgba(255,255,255,0.2);
+            transform: translateY(-2px);
+        }
+        .btn-enter:hover::before { transform: translate(-50%, -50%) scale(2); }
+
+        /* --- 主界面 (App View) --- */
+        #app-view {
+            z-index: 12;
+            pointer-events: none; /* 让点击穿透到底层Canvas */
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 50;
+        }
+
+        #sound-toggle {
+            position: absolute;
+            top: 20px; right: 20px;
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+            display: flex;
+            justify-content: center; align-items: center;
+            cursor: pointer;
+            pointer-events: auto;
+            transition: all 0.3s;
+            color: rgba(255,255,255,0.8);
+        }
+        #sound-toggle:hover { background: rgba(255,255,255,0.25); transform: scale(1.1); }
+        #sound-toggle.muted::after {
+            content: ''; position: absolute; width: 2px; height: 20px;
+            background: white; transform: rotate(45deg);
+        }
+
+        /* --- 输入区域 (重构版) --- */
+        #input-container {
+            position: absolute;
+            bottom: 40px; /* 默认靠下 */
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%; max-width: 420px;
+            pointer-events: auto;
+            display: flex; flex-direction: column; align-items: center;
+            transition: all 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+            z-index: 20;
+        }
+
+        /* 展开时的状态：往上提一点，留出空间给心情面板 */
+        #input-container.expanded {
+            bottom: 80px;
+        }
+
+        body.sending #input-container {
+            opacity: 0; transform: translate(-50%, 50px); pointer-events: none;
+        }
+
+        /* 心情面板区域：默认折叠 */
+        #mood-section {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            opacity: 0;
+            max-height: 0;
+            transform: translateY(20px);
+            overflow: hidden;
+            transition: all 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+            margin-bottom: 0;
+        }
+
+        /* 展开时显示心情面板 */
+        #input-container.expanded #mood-section {
+            opacity: 1;
+            max-height: 350px; /* 足够容纳光球和滑块的高度 */
+            transform: translateY(0);
+            margin-bottom: 20px;
+        }
+
+        .mood-visualizer {
+            position: relative; width: 200px; height: 200px;
+            display: flex; justify-content: center; align-items: center;
+            pointer-events: none;
+        }
+        #moodCanvas {
+            width: 100%; height: 100%;
+            filter: blur(12px) contrast(1.2);
+            transition: filter 0.3s; opacity: 0.9;
+        }
+        .mood-label {
+            font-size: 15px; font-weight: 500; margin-bottom: 15px; margin-top: -10px;
+            text-align: center; letter-spacing: 2px; text-transform: uppercase;
+            text-shadow: 0 0 15px rgba(255,255,255,0.3); height: 20px;
+            color: rgba(255,255,255,0.9); z-index: 2;
+        }
+
+        .slider-container {
+            width: 100%; padding: 0 15px;
+            position: relative; height: 40px; display: flex; align-items: center;
+        }
+        .slider-track-bg {
+            position: absolute; left: 15px; right: 15px; height: 4px; border-radius: 2px;
+            background: linear-gradient(to right, #4a0e4e, #5a7cfa, #52d681, #ff9f43, #fbc531);
+            opacity: 0.3; pointer-events: none;
+        }
+        input[type=range] {
+            -webkit-appearance: none; width: 100%; background: transparent;
+            cursor: pointer; position: relative; z-index: 2; margin: 0;
+        }
+        input[type=range]:focus { outline: none; }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%; height: 40px; background: transparent; border-radius: 20px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 24px; width: 24px;
+            border-radius: 50%; background: #ffffff; cursor: pointer;
+            margin-top: 8px;
+            box-shadow: 0 0 15px rgba(255, 255, 255, 0.8), 0 0 0 4px rgba(255,255,255,0.1);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .input-wrapper {
+            width: 100%; background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 35px;
+            padding: 6px; display: flex;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            transition: all 0.3s ease;
+        }
+
+        /* 激活状态下输入框更亮一点 */
+        #input-container.expanded .input-wrapper {
+            background: rgba(255, 255, 255, 0.15);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        #wish-input {
+            flex: 1; background: transparent; border: none; padding: 15px 25px;
+            color: white; font-size: 16px; font-weight: 400;
+        }
+        #wish-input::placeholder { color: rgba(255, 255, 255, 0.5); transition: color 0.3s;}
+        #input-container.expanded #wish-input::placeholder { color: rgba(255, 255, 255, 0.3); }
+
+        #send-btn {
+            background: rgba(255,255,255,0.1); border: none; border-radius: 50%;
+            width: 50px; height: 50px; display: flex;
+            justify-content: center; align-items: center; cursor: pointer;
+            transition: all 0.4s; margin-left: 5px; opacity: 0.6;
+        }
+        /* 只有展开且输入内容时，发送按钮才完全高亮，这里用JS控制或简化为hover */
+        #input-container.expanded #send-btn { opacity: 1; background: rgba(255,255,255,0.2); }
+        #send-btn:hover { transform: scale(1.1); background: rgba(255,255,255,0.3) !important; }
+        #send-btn svg { width: 22px; height: 22px; fill: white; transform: translateX(2px); }
+
+        /* --- Modal & Overlays --- */
+        #star-modal {
+            position: fixed; top: 50%; left: 50%;
+            transform: translate(-50%, -50%) scale(0.95);
+            width: 85%; max-width: 380px;
+            background: rgba(20, 20, 35, 0.85);
+            backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px);
+            border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 32px;
+            padding: 35px 30px; text-align: center;
+            box-shadow: 0 30px 60px rgba(0,0,0,0.6); z-index: 1000;
+            opacity: 0; pointer-events: none;
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        #star-modal.active { opacity: 1; transform: translate(-50%, -50%) scale(1); pointer-events: auto; }
+
+        .modal-mood-orb { width: 60px; height: 60px; border-radius: 50%; margin: 0 auto 20px auto; box-shadow: 0 0 30px currentColor; }
+        .modal-content-text { font-size: 1.15rem; line-height: 1.6; margin-bottom: 25px; color: rgba(255,255,255,0.95); word-wrap: break-word; max-height: 250px; overflow-y: auto; font-weight: 300; }
+        .modal-time { font-size: 0.85rem; color: rgba(255, 255, 255, 0.5); margin-bottom: 30px; font-weight: 500; letter-spacing: 0.5px; }
+        .modal-actions { display: flex; gap: 12px; justify-content: center; }
+        .btn-modal { padding: 12px 28px; border-radius: 25px; font-size: 15px; cursor: pointer; transition: 0.2s; border: none; font-weight: 500; }
+        .btn-close { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.1); }
+        .btn-close:hover { background: rgba(255,255,255,0.2); }
+        .btn-release { background: rgba(255, 80, 80, 0.1); color: #ff9999; border: 1px solid rgba(255, 80, 80, 0.2); }
+        .btn-release:hover { background: rgba(255, 80, 80, 0.2); color: #ffcccc; }
+
+        #overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(3px);
+            z-index: 999; opacity: 0; pointer-events: none; transition: opacity 0.5s;
+        }
+        #overlay.active { opacity: 1; pointer-events: auto; }
+
+        #toast {
+            position: fixed; top: 15%; left: 50%; transform: translateX(-50%) translateY(-20px);
+            background: rgba(255,255,255,0.95); color: #222; padding: 12px 30px;
+            border-radius: 50px; box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            font-size: 15px; font-weight: 600; opacity: 0; pointer-events: none;
+            transition: 0.5s cubic-bezier(0.19, 1, 0.22, 1); z-index: 2000; white-space: nowrap;
+        }
+        #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+        #success-msg {
+            position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 24px; color: #fff; text-shadow: 0 0 10px rgba(255,255,255,0.8);
+            opacity: 0; pointer-events: none; z-index: 100; font-weight: 300; letter-spacing: 5px;
+        }
+        .fade-in-out { animation: fadeInOut 3.5s forwards; }
+        @keyframes fadeInOut {
+            0% { opacity: 0; transform: translate(-50%, -40%); }
+            20% { opacity: 1; transform: translate(-50%, -50%); }
+            80% { opacity: 1; transform: translate(-50%, -50%); }
+            100% { opacity: 0; transform: translate(-50%, -60%); }
+        }
+
+        @keyframes fadeInDown { from { opacity: 0; transform: translateY(-30px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+</head>
+<body>
+    <canvas id="skyCanvas"></canvas>
+
+    <section id="landing-view" class="view-section">
+        <h1 class="landing-title">星空树洞</h1>
+        <div class="landing-subtitle">The Starry Hollow</div>
+        <button class="btn-enter" id="enter-btn">开启旅程</button>
+    </section>
+
+    <section id="app-view" class="view-section hidden">
+        <div id="ui-layer">
+            <div id="sound-toggle" class="" title="开启/关闭声音">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                    <path d="M12 4L7 9H3v6h4l5 5V4zM16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+                </svg>
+            </div>
+        </div>
+
+        <div id="input-container">
+            <!-- 心情部分被包裹，默认隐藏 -->
+            <div id="mood-section">
+                <div class="mood-visualizer">
+                    <canvas id="moodCanvas" width="200" height="200"></canvas>
+                </div>
+                <div class="mood-label" id="mood-label">平静</div>
+                <div class="slider-container">
+                    <div class="slider-track-bg"></div>
+                    <input type="range" id="mood-slider" min="0" max="100" value="50" step="1">
+                </div>
+            </div>
+
+            <div class="input-wrapper">
+                <input type="text" id="wish-input" placeholder="写下你的心事..." maxlength="50" autocomplete="off">
+                <button id="send-btn">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <div id="toast"></div>
+    <div id="success-msg">已化作星辰</div>
+    <div id="overlay"></div>
+    <div id="star-modal">
+        <div class="modal-mood-orb" id="modal-orb"></div>
+        <div class="modal-content-text" id="modal-text"></div>
+        <div class="modal-time" id="modal-time"></div>
+        <div class="modal-actions">
+            <button class="btn-modal btn-close" id="modal-close">关闭</button>
+            <button class="btn-modal btn-release" id="modal-release">让它随风去</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. DOM 元素获取 ---
+        const skyCanvas = document.getElementById('skyCanvas');
+        const ctx = skyCanvas.getContext('2d');
+        const moodCanvas = document.getElementById('moodCanvas');
+        const mCtx = moodCanvas.getContext('2d');
+
+        const landingView = document.getElementById('landing-view');
+        const appView = document.getElementById('app-view');
+        const enterBtn = document.getElementById('enter-btn');
+
+        const soundToggle = document.getElementById('sound-toggle');
+        const slider = document.getElementById('mood-slider');
+        const moodLabel = document.getElementById('mood-label');
+        const sendBtn = document.getElementById('send-btn');
+        const wishInput = document.getElementById('wish-input');
+        const inputContainer = document.getElementById('input-container');
+
+        const toast = document.getElementById('toast');
+        const successMsg = document.getElementById('success-msg');
+        const starModal = document.getElementById('star-modal');
+        const modalText = document.getElementById('modal-text');
+        const modalTime = document.getElementById('modal-time');
+        const modalOrb = document.getElementById('modal-orb');
+        const modalReleaseBtn = document.getElementById('modal-release');
+        const modalCloseBtn = document.getElementById('modal-close');
+        const overlay = document.getElementById('overlay');
+
+        // --- 2. 全局配置与状态 ---
+        const STORAGE_KEY = 'starry_hollow_v4'; // 保持 key 不变，尝试读取
+        const quotes = [
+            "万物皆有裂痕，那是光照进来的地方。",
+            "你被安稳地爱着呢，要有做任何事的勇气。",
+            "月亮不属于任何人，但此刻月光属于你。",
+            "别慌，月亮也正在大海某处迷茫。",
+            "生活原本沉闷，但跑起来就有风。",
+            "每一个不曾起舞的日子，都是对生命的辜负。"
+        ];
+
+        let width, height;
+        let particles = [];
+        let stars = [];
+        let shootingStars = [];
+        let flashes = [];
+        let currentOpenStar = null;
+        let mouseX = 0, mouseY = 0;
+        let time = 0;
+        let currentMoodState = null;
+        let canvasIsHovering = false;
+
+        const moodConfig = {
+            stops: [
+                { val: 0, color: '#4a0e4e', label: '非常不愉快', turbulence: 1.5, speed: 0.04 },
+                { val: 25, color: '#5a7cfa', label: '不愉快', turbulence: 1.0, speed: 0.03 },
+                { val: 50, color: '#52d681', label: '平静', turbulence: 0.3, speed: 0.015 },
+                { val: 75, color: '#ff9f43', label: '愉快', turbulence: 0.15, speed: 0.02 },
+                { val: 100, color: '#fbc531', label: '非常愉快', turbulence: 0.05, speed: 0.025 }
+            ]
+        };
+
+        // --- 3. 辅助函数 ---
+        function lerpColor(a, b, amount) {
+            const ah = parseInt(a.replace(/#/g, ''), 16),
+                ar = ah >> 16, ag = ah >> 8 & 0xff, ab = ah & 0xff,
+                bh = parseInt(b.replace(/#/g, ''), 16),
+                br = bh >> 16, bg = bh >> 8 & 0xff, bb = bh & 0xff,
+                rr = ar + amount * (br - ar),
+                rg = ag + amount * (bg - ag),
+                rb = ab + amount * (bb - ab);
+            return '#' + ((1 << 24) + (rr << 16) + (rg << 8) + rb | 0).toString(16).slice(1);
+        }
+
+        function getMoodState(val) {
+            let lower = moodConfig.stops[0];
+            let upper = moodConfig.stops[moodConfig.stops.length - 1];
+            for (let i = 0; i < moodConfig.stops.length - 1; i++) {
+                if (val >= moodConfig.stops[i].val && val <= moodConfig.stops[i+1].val) {
+                    lower = moodConfig.stops[i]; upper = moodConfig.stops[i+1]; break;
+                }
+            }
+            const pct = (val - lower.val) / (upper.val - lower.val);
+            return {
+                color: lerpColor(lower.color, upper.color, pct),
+                label: pct < 0.5 ? lower.label : upper.label,
+                turbulence: lower.turbulence + (upper.turbulence - lower.turbulence) * pct,
+                speed: lower.speed + (upper.speed - lower.speed) * pct,
+                val: val
+            };
+        }
+
+        // --- 4. 音频类 ---
+        class AudioController {
+            constructor() {
+                this.ctx = null;
+                this.isMuted = false;
+                this.windNode = null;
+            }
+            init() {
+                try {
+                    if (!this.ctx) {
+                        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                        this.createWindSound();
+                    }
+                    if (this.ctx.state === 'suspended') { this.ctx.resume(); }
+                    if (!this.isMuted && this.windGain) { this.windGain.gain.setTargetAtTime(0.02, this.ctx.currentTime, 2); }
+                } catch(e) { console.error("Audio Error:", e); }
+            }
+            toggleMute() {
+                if (!this.ctx) this.init();
+                this.isMuted = !this.isMuted;
+                if (!this.isMuted && this.windGain) {
+                    this.windGain.gain.setTargetAtTime(0.02, this.ctx.currentTime, 2);
+                } else if (this.windGain) {
+                    this.windGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5);
+                }
+                return this.isMuted;
+            }
+            createWindSound() {
+                if(!this.ctx) return;
+                const bufferSize = 2 * this.ctx.sampleRate;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+                const noise = this.ctx.createBufferSource();
+                noise.buffer = buffer; noise.loop = true;
+                const filter = this.ctx.createBiquadFilter();
+                filter.type = 'lowpass'; filter.frequency.value = 300;
+                this.windGain = this.ctx.createGain();
+                this.windGain.gain.value = 0;
+                noise.connect(filter); filter.connect(this.windGain);
+                this.windGain.connect(this.ctx.destination);
+                noise.start(); this.windNode = noise;
+            }
+            playSend() {
+                if (this.isMuted || !this.ctx) return;
+                const osc = this.ctx.createOscillator(); const gain = this.ctx.createGain();
+                osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(600, this.ctx.currentTime + 0.4);
+                gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.4);
+                osc.connect(gain); gain.connect(this.ctx.destination);
+                osc.start(); osc.stop(this.ctx.currentTime + 0.5);
+            }
+            playMoodChime(moodVal) {
+                if (this.isMuted || !this.ctx) return;
+                const t = this.ctx.currentTime;
+                const isHappy = moodVal > 60; const isSad = moodVal < 40;
+                const baseFreq = 220 + (moodVal / 100) * 440;
+                let freqs = [baseFreq];
+                if (isSad) freqs.push(baseFreq * 1.2);
+                else if (isHappy) { freqs.push(baseFreq * 1.25); freqs.push(baseFreq * 1.5); }
+                else freqs.push(baseFreq * 2);
+                freqs.forEach((f, i) => {
+                    const osc = this.ctx.createOscillator(); const gain = this.ctx.createGain();
+                    osc.type = isSad ? 'triangle' : 'sine'; osc.frequency.value = f;
+                    const attack = isSad ? 0.1 : 0.02; const decay = isSad ? 2.0 : 1.2;
+                    gain.gain.setValueAtTime(0, t);
+                    gain.gain.linearRampToValueAtTime(0.05 / freqs.length, t + attack + (i*0.05));
+                    gain.gain.exponentialRampToValueAtTime(0.001, t + attack + decay);
+                    osc.connect(gain); gain.connect(this.ctx.destination);
+                    osc.start(t); osc.stop(t + attack + decay + 0.1);
+                });
+            }
+            playShatter() {
+                if (this.isMuted || !this.ctx) return;
+                const count = 6;
+                for(let i=0; i<count; i++) {
+                    setTimeout(() => {
+                        const osc = this.ctx.createOscillator(); const gain = this.ctx.createGain();
+                        osc.frequency.value = 100 + Math.random() * 800;
+                        gain.gain.value = 0.05;
+                        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.1);
+                        osc.connect(gain); gain.connect(this.ctx.destination);
+                        osc.start(); osc.stop(this.ctx.currentTime + 0.15);
+                    }, i * 40);
+                }
+            }
+        }
+
+        // --- 5. 实体类定义 ---
+        class Star {
+            constructor(x, y, size, isUserCreated, content, timestamp, colorHex, moodVal) {
+                this.x = x || Math.random() * width;
+                this.y = y || Math.random() * height * 0.85;
+                this.originX = this.x; this.originY = this.y;
+                this.size = size || Math.random() * 1.5;
+                this.isUserCreated = isUserCreated;
+                this.content = content || ""; this.timestamp = timestamp || "";
+                this.color = colorHex || '#fff'; this.moodVal = moodVal;
+                this.baseAlpha = Math.random() * 0.5 + 0.3; this.alpha = this.baseAlpha;
+                this.twinkleSpeed = Math.random() * 0.02 + 0.005; this.twinkleDir = 1;
+                this.depth = this.size * 0.02;
+                if (isUserCreated) {
+                    this.size = Math.random() * 2 + 3.5;
+                    this.baseAlpha = 0.9; this.depth = 0.05;
+                }
+            }
+            update() {
+                this.alpha += this.twinkleSpeed * this.twinkleDir;
+                if (this.alpha > this.baseAlpha + 0.2 || this.alpha < this.baseAlpha - 0.2) this.twinkleDir *= -1;
+                const offsetX = (mouseX - width/2) * -this.depth;
+                const offsetY = (mouseY - height/2) * -this.depth;
+                this.x = this.originX + offsetX; this.y = this.originY + offsetY;
+            }
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+
+                if (this.isUserCreated) {
+                    const dx = mouseX - this.x;
+                    const dy = mouseY - this.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    const isHovering = dist < this.size + 20;
+
+                    if (isHovering) {
+                        canvasIsHovering = true;
+                        ctx.globalAlpha = 1;
+                        ctx.shadowBlur = 30; ctx.shadowColor = this.color;
+                        ctx.fillStyle = this.color; ctx.fill();
+                        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+                        ctx.lineWidth = 1.5; ctx.stroke();
+                    } else {
+                        ctx.globalAlpha = Math.max(0, Math.min(1, this.alpha));
+                        ctx.shadowBlur = 15; ctx.shadowColor = this.color;
+                        ctx.fillStyle = this.color; ctx.fill();
+                    }
+                    ctx.shadowBlur = 0;
+                } else {
+                    ctx.globalAlpha = Math.max(0, Math.min(1, this.alpha));
+                    ctx.fillStyle = this.color; ctx.fill();
+                }
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        class ShootingStar {
+            constructor() { this.reset(); }
+            reset() {
+                this.x = Math.random() * width; this.y = Math.random() * height * 0.5;
+                this.length = Math.random() * 80 + 10; this.speed = Math.random() * 2 + 3;
+                this.size = Math.random() * 2 + 1; this.angle = Math.PI / 4;
+                this.active = true; this.opacity = 0; this.wait = Math.random() * 800;
+            }
+            update() {
+                if (this.wait > 0) { this.wait--; return; }
+                if (this.x > width || this.y > height) { this.active = false; } else { this.opacity = 1; }
+                this.x += this.speed * Math.cos(this.angle);
+                this.y += this.speed * Math.sin(this.angle);
+            }
+            draw() {
+                if (!this.active || this.wait > 0) return;
+                ctx.save(); ctx.strokeStyle = 'rgba(255, 255, 255, ' + this.opacity + ')';
+                ctx.lineWidth = this.size; ctx.lineCap = 'round'; ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.x - this.length * Math.cos(this.angle), this.y - this.length * Math.sin(this.angle));
+                ctx.stroke(); ctx.restore();
+            }
+            checkHit(mx, my) {
+                if (!this.active || this.wait > 0) return false;
+                const d = Math.sqrt((mx - this.x)**2 + (my - this.y)**2);
+                return d < 80;
+            }
+        }
+
+        class Particle {
+            constructor(x, y, targetX, targetY, color, isExplosion = false) {
+                this.x = x; this.y = y; this.targetX = targetX; this.targetY = targetY;
+                this.color = color; this.isExplosion = isExplosion;
+                if (isExplosion) {
+                    const angle = Math.random() * Math.PI * 2; const speed = Math.random() * 5;
+                    this.vx = Math.cos(angle) * speed; this.vy = Math.sin(angle) * speed;
+                    this.life = 1.0; this.size = Math.random() * 3 + 2;
+                } else {
+                    this.size = Math.random() * 3 + 1; this.arrived = false;
+                    this.wobble = Math.random() * Math.PI * 2;
+                }
+            }
+            update() {
+                if (this.isExplosion) {
+                    this.x += this.vx; this.y += this.vy; this.life -= 0.02; this.size *= 0.95;
+                } else {
+                    const dx = this.targetX - this.x; const dy = this.targetY - this.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist < 10) { this.arrived = true; return; }
+                    this.x += dx * 0.05; this.y += dy * 0.05;
+                    this.x += Math.sin(this.wobble) * 2; this.wobble += 0.1; this.size *= 0.99;
+                }
+            }
+            draw() {
+                ctx.fillStyle = this.color; ctx.globalAlpha = this.isExplosion ? this.life : 1;
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+            }
+        }
+
+        // --- 6. 核心逻辑函数 ---
+        const audio = new AudioController();
+
+        function resize() {
+            width = window.innerWidth; height = window.innerHeight;
+            skyCanvas.width = width; skyCanvas.height = height;
+        }
+
+        function initGame() {
+            for(let i=0; i<150; i++) stars.push(new Star());
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if(saved) {
+                try {
+                    const parsed = JSON.parse(saved);
+                    parsed.forEach(s => {
+                        // 优化加载逻辑：放宽过滤条件，并把跑偏的星星拉回来
+                        if (s.x !== undefined && s.y !== undefined) {
+                            // 如果坐标超出当前屏幕太多，将其重置到随机可见位置
+                            let finalX = s.x;
+                            let finalY = s.y;
+                            if (finalX > width || finalX < 0) finalX = Math.random() * width * 0.8 + width * 0.1;
+                            if (finalY > height * 0.9 || finalY < 0) finalY = Math.random() * height * 0.6; // 稍微靠上一点
+
+                            stars.push(new Star(finalX, finalY, s.size, true, s.content, s.timestamp, s.color, s.moodVal));
+                        }
+                    });
+                } catch(e) { console.warn("Load error", e); }
+            }
+            shootingStars.push(new ShootingStar());
+        }
+
+        function updateMoodUI() {
+            const val = parseInt(slider.value);
+            currentMoodState = getMoodState(val);
+            moodLabel.innerText = currentMoodState.label;
+            moodLabel.style.color = currentMoodState.color;
+            sendBtn.style.background = currentMoodState.color + '40';
+            sendBtn.style.boxShadow = `0 0 20px ${currentMoodState.color}60`;
+        }
+
+        function drawMoodShape() {
+            mCtx.clearRect(0, 0, 220, 220);
+            const cx = 100, cy = 100; // 调整中心点适应200x200
+            const baseRadius = 55 + (currentMoodState.val / 100) * 15;
+            mCtx.fillStyle = currentMoodState.color;
+            mCtx.beginPath();
+            const points = 100;
+            for (let i = 0; i <= points; i++) {
+                const angle = (Math.PI * 2 * i) / points;
+                const noise1 = Math.sin(angle * 3 + time * currentMoodState.speed) * (10 * currentMoodState.turbulence);
+                const noise2 = Math.cos(angle * 5 - time * currentMoodState.speed * 1.5) * (5 * currentMoodState.turbulence);
+                const breathing = Math.sin(time * 0.02) * 5;
+                const r = baseRadius + noise1 + noise2 + breathing;
+                const x = cx + Math.cos(angle) * r;
+                const y = cy + Math.sin(angle) * r;
+                if (i === 0) mCtx.moveTo(x, y); else mCtx.lineTo(x, y);
+            }
+            mCtx.closePath(); mCtx.fill();
+            time++; requestAnimationFrame(drawMoodShape);
+        }
+
+        function toggleInputExpand(expand) {
+            if (expand) {
+                inputContainer.classList.add('expanded');
+            } else {
+                inputContainer.classList.remove('expanded');
+                wishInput.blur(); // 移除焦点
+            }
+        }
+
+        function sendWish() {
+            const text = wishInput.value.trim();
+            if (!text) return;
+            audio.playSend();
+            document.body.classList.add('sending');
+            wishInput.blur();
+
+            // 立即收起心情面板
+            toggleInputExpand(false);
+
+            const targetX = width * 0.1 + Math.random() * width * 0.8;
+            const targetY = Math.random() * height * 0.5;
+            const startX = width/2; const startY = height - 100;
+            const count = Math.min(80, Math.max(20, text.length * 4));
+            for(let i=0; i<count; i++) {
+                setTimeout(() => {
+                    particles.push(new Particle(startX + (Math.random()-0.5)*100, startY, targetX, targetY, currentMoodState.color));
+                }, i * 8);
+            }
+            setTimeout(() => {
+                createStar(targetX, targetY, text);
+                resetInput();
+            }, 1500);
+        }
+
+        function createStar(x, y, text) {
+            audio.playMoodChime(currentMoodState.val);
+            flashes.push({x, y, r:1, a:1});
+            const now = new Date();
+            const ts = now.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+            stars.push(new Star(x, y, null, true, text, ts, currentMoodState.color, currentMoodState.val));
+            saveData();
+            successMsg.classList.add('fade-in-out');
+            setTimeout(() => successMsg.classList.remove('fade-in-out'), 3500);
+        }
+
+        function resetInput() {
+            wishInput.value = '';
+            document.body.classList.remove('sending');
+            // 确保是收起状态
+            inputContainer.classList.remove('expanded');
+        }
+
+        function saveData() {
+            const data = stars.filter(s => s.isUserCreated).map(s => ({
+                x: s.originX, y: s.originY, size: s.size, content: s.content, timestamp: s.timestamp, color: s.color, moodVal: s.moodVal
+            }));
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        }
+
+        function releaseStar() {
+            if (!currentOpenStar) return;
+            const targetStar = currentOpenStar;
+            const { x, y, color } = targetStar;
+            audio.playShatter();
+            closeModal();
+            for(let i=0; i<30; i++) particles.push(new Particle(x, y, 0, 0, color, true));
+            stars = stars.filter(s => s !== targetStar);
+            saveData();
+        }
+
+        function handleInteraction(mx, my) {
+            // 点击画布时，如果输入框是展开的，先收起输入框，不处理星星点击
+            if (inputContainer.classList.contains('expanded')) {
+                toggleInputExpand(false);
+                return;
+            }
+
+            if (landingView.style.display !== 'none') return;
+            if (starModal.classList.contains('active')) { closeModal(); return; }
+
+            const hitMeteor = shootingStars.find(s => s.checkHit(mx, my));
+            if (hitMeteor) {
+                hitMeteor.active = false; showToast(quotes[Math.floor(Math.random() * quotes.length)]);
+                audio.playMoodChime(80); return;
+            }
+
+            for(let i=stars.length-1; i>=0; i--) {
+                const s = stars[i];
+                if(s.isUserCreated) {
+                    const dist = Math.sqrt((s.x - mx)**2 + (s.y - my)**2);
+                    if(dist < s.size + 20) { openStar(s); break; }
+                }
+            }
+        }
+
+        function openStar(star) {
+            currentOpenStar = star;
+            modalText.innerText = star.content; modalTime.innerText = star.timestamp;
+            modalOrb.style.backgroundColor = star.color; modalOrb.style.boxShadow = `0 0 30px ${star.color}`;
+            starModal.classList.add('active'); overlay.classList.add('active');
+            if (star.moodVal !== undefined) audio.playMoodChime(star.moodVal); else audio.playSend();
+        }
+
+        function closeModal() {
+            starModal.classList.remove('active'); overlay.classList.remove('active'); currentOpenStar = null;
+        }
+
+        function showToast(msg) {
+            toast.innerText = "✨ " + msg; toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        function animate() {
+            canvasIsHovering = false;
+            ctx.fillStyle = '#050714'; ctx.fillRect(0, 0, width, height);
+            stars.forEach(s => { s.update(); s.draw(); });
+            if(Math.random() < 0.005 && shootingStars.filter(s=>s.active).length < 2) shootingStars.push(new ShootingStar());
+            shootingStars.forEach(s => { s.update(); s.draw(); });
+            shootingStars = shootingStars.filter(s => s.active || s.wait > 0);
+            for(let i=particles.length-1; i>=0; i--) {
+                let p = particles[i]; p.update(); p.draw();
+                if((p.arrived && !p.isExplosion) || (p.isExplosion && p.life <= 0)) particles.splice(i, 1);
+            }
+            for(let i=flashes.length-1; i>=0; i--) {
+                let f = flashes[i]; f.r += 2; f.a -= 0.05;
+                ctx.save(); ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI*2);
+                ctx.fillStyle = `rgba(255,255,255,${f.a})`; ctx.shadowBlur = 20; ctx.shadowColor = 'white'; ctx.fill(); ctx.restore();
+                if(f.a <= 0) flashes.splice(i, 1);
+            }
+            if (skyCanvas) { skyCanvas.style.cursor = canvasIsHovering ? 'pointer' : 'default'; }
+            requestAnimationFrame(animate);
+        }
+
+        // --- 7. 事件绑定 ---
+        window.addEventListener('resize', resize);
+        window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+        window.addEventListener('touchmove', e => { mouseX = e.touches[0].clientX; mouseY = e.touches[0].clientY; });
+
+        enterBtn.addEventListener('click', () => {
+            audio.init();
+            landingView.classList.add('hidden');
+            setTimeout(() => {
+                landingView.style.display = 'none';
+                appView.classList.remove('hidden');
+            }, 500);
+        });
+
+        slider.addEventListener('input', updateMoodUI);
+        soundToggle.addEventListener('click', () => {
+            const isMuted = audio.toggleMute();
+            soundToggle.classList.toggle('muted', isMuted);
+        });
+
+        modalCloseBtn.addEventListener('click', closeModal);
+        modalReleaseBtn.addEventListener('click', releaseStar);
+        overlay.addEventListener('click', closeModal);
+
+        sendBtn.addEventListener('click', sendWish);
+        wishInput.addEventListener('keypress', e => e.key==='Enter' && sendWish());
+
+        // 新增交互：点击输入框展开心情面板
+        wishInput.addEventListener('focus', () => toggleInputExpand(true));
+
+        skyCanvas.addEventListener('mousedown', e => handleInteraction(e.clientX, e.clientY));
+        skyCanvas.addEventListener('touchstart', e => handleInteraction(e.touches[0].clientX, e.touches[0].clientY));
+
+        // --- 8. 启动 ---
+        resize();
+        initGame();
+        updateMoodUI();
+        drawMoodShape();
+        animate();
+
+    </script>
+</body>
+</html>
