@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NEON FLUX PRO - 终极节奏机</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+
+        body {
+            background-color: #020202;
+            color: #e2e8f0;
+            font-family: 'Orbitron', sans-serif;
+            overflow: hidden;
+            touch-action: none;
+            user-select: none;
+            margin: 0;
+        }
+
+        /* CRT 屏幕扫描线特效 */
+        .crt-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            z-index: 90;
+        }
+
+        /* 晕影效果 */
+        .vignette {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle, rgba(0,0,0,0) 50%, rgba(0,0,0,0.8) 100%);
+            pointer-events: none;
+            z-index: 80;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .ui-layer {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 24px;
+            z-index: 100;
+        }
+
+        .controls {
+            pointer-events: auto;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .glass-panel {
+            background: rgba(10, 10, 10, 0.6);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 12px;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #ccc;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-transform: uppercase;
+            font-size: 0.9rem;
+        }
+        
+        .btn:hover { background: rgba(255, 255, 255, 0.15); color: white; border-color: rgba(255,255,255,0.3); transform: translateY(-2px); }
+        .btn:active { transform: scale(0.95); }
+        .btn.primary { background: rgba(0, 255, 255, 0.1); border-color: cyan; color: cyan; box-shadow: 0 0 15px rgba(0,255,255,0.2); }
+        .btn.danger { border-color: #ff3366; color: #ff3366; }
+
+        .start-screen {
+            position: absolute;
+            inset: 0;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+            transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .title-glitch {
+            font-size: 4rem;
+            font-weight: 900;
+            color: white;
+            text-shadow: 2px 2px #ff00ff, -2px -2px #00ffff;
+            animation: glitch 1s infinite alternate;
+        }
+        @media (max-width: 768px) { .title-glitch { font-size: 2.5rem; } }
+
+        @keyframes glitch {
+            0% { text-shadow: 2px 2px #ff00ff, -2px -2px #00ffff; }
+            50% { text-shadow: -2px 2px #ff00ff, 2px -2px #00ffff; }
+            100% { text-shadow: 2px -2px #ff00ff, -2px 2px #00ffff; }
+        }
+
+        /* 现代滑块 */
+        input[type=range] {
+            -webkit-appearance: none;
+            background: rgba(255,255,255,0.1);
+            height: 4px;
+            border-radius: 2px;
+            width: 120px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            background: cyan;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px cyan;
+            transition: transform 0.1s;
+        }
+        input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.5); }
+    </style>
+</head>
+<body>
+
+    <div class="crt-overlay"></div>
+    <div class="vignette"></div>
+    <canvas id="canvas"></canvas>
+
+    <!-- UI 层 -->
+    <div class="ui-layer">
+        <!-- 顶部 -->
+        <div class="flex justify-between items-start pointer-events-auto">
+            <div class="glass-panel">
+                <h1 class="text-xl font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-500">NEON FLUX <span class="text-xs text-white bg-red-600 px-1 rounded ml-1">PRO</span></h1>
+                <div class="flex items-center gap-2 mt-1">
+                    <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                    <p class="text-[10px] text-gray-400">SYSTEM ONLINE</p>
+                </div>
+            </div>
+            
+            <div class="glass-panel text-right">
+                <div class="text-[10px] text-gray-400 mb-1 tracking-widest">TEMPO CONTROL</div>
+                <div class="flex items-center gap-3">
+                    <span id="bpmVal" class="text-xl font-bold text-cyan-400 w-8">120</span>
+                    <input type="range" id="bpmRange" min="60" max="200" value="120">
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部 -->
+        <div class="controls justify-center mb-4">
+            <button class="btn primary" id="playBtn"><i class="fa-solid fa-play"></i></button>
+            <button class="btn" id="randomBtn"><i class="fa-solid fa-shuffle"></i> GEN</button>
+            <button class="btn danger" id="clearBtn"><i class="fa-solid fa-trash"></i></button>
+        </div>
+    </div>
+
+    <!-- 启动界面 -->
+    <div id="startScreen" class="start-screen controls">
+        <h1 class="title-glitch mb-2">NEON FLUX</h1>
+        <p class="text-cyan-200 mb-8 tracking-[0.3em] text-xs md:text-sm uppercase">Advanced Audio Visualizer</p>
+        <button id="initBtn" class="btn primary" style="font-size: 1.2rem; padding: 15px 50px;">
+            <i class="fa-solid fa-power-off"></i> INITIALIZE
+        </button>
+    </div>
+
+    <script>
+        // --- 核心配置 ---
+        const TRACK_COUNT = 6; // 增加到6个轨道
+        const STEP_COUNT = 16;
+        
+        // 赛博朋克配色方案
+        const TRACK_CONFIG = [
+            { name: "KICK", color: "#ff0055", radius: 0, lineWidth: 3 },    // 核心
+            { name: "BASS", color: "#7000ff", radius: 0, lineWidth: 2 },
+            { name: "SNARE", color: "#ff9900", radius: 0, lineWidth: 2 },
+            { name: "SYNTH1", color: "#00ccff", radius: 0, lineWidth: 1 },
+            { name: "SYNTH2", color: "#00ff99", radius: 0, lineWidth: 1 },
+            { name: "HIHAT", color: "#ffff00", radius: 0, lineWidth: 1 }    // 外圈
+        ];
+
+        // --- 音频引擎 Pro (Web Audio API) ---
+        const AudioEngine = {
+            ctx: null,
+            masterGain: null,
+            compressor: null,
+            delay: null,
+
+            init() {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // 效果链: Master -> Compressor -> Delay(Aux) -> Destination
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.gain.value = 0.6;
+
+                // 1. 压缩器 (让声音更有力)
+                this.compressor = this.ctx.createDynamicsCompressor();
+                this.compressor.threshold.value = -24;
+                this.compressor.knee.value = 30;
+                this.compressor.ratio.value = 12;
+                this.compressor.attack.value = 0.003;
+                this.compressor.release.value = 0.25;
+
+                // 2. 延时效果 (回声/空间感)
+                this.delay = this.ctx.createDelay();
+                this.delay.delayTime.value = 0.375; // 3/8 note delay at 120bpm approx
+                const delayFeedback = this.ctx.createGain();
+                delayFeedback.gain.value = 0.3; // 回声衰减
+                
+                // 连接线路
+                this.masterGain.connect(this.compressor);
+                this.compressor.connect(this.ctx.destination);
+                
+                // 发送一部分信号到延时
+                this.compressor.connect(this.delay);
+                this.delay.connect(delayFeedback);
+                delayFeedback.connect(this.delay);
+                this.delay.connect(this.ctx.destination);
+            },
+
+            playKick(time) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.frequency.setValueAtTime(150, time);
+                osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+                gain.gain.setValueAtTime(1, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+                osc.start(time);
+                osc.stop(time + 0.5);
+                // 屏幕震动特效
+                visualizer.shakeScreen(15); 
+            },
+
+            playSnare(time) {
+                // 噪声
+                const bufferSize = this.ctx.sampleRate * 0.2;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+                
+                const noise = this.ctx.createBufferSource();
+                noise.buffer = buffer;
+                const noiseFilter = this.ctx.createBiquadFilter();
+                noiseFilter.type = 'highpass';
+                noiseFilter.frequency.value = 1000;
+                const noiseGain = this.ctx.createGain();
+                noiseGain.gain.setValueAtTime(0.5, time);
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+                
+                noise.connect(noiseFilter);
+                noiseFilter.connect(noiseGain);
+                noiseGain.connect(this.masterGain);
+                noise.start(time);
+                
+                // 冲击感
+                const osc = this.ctx.createOscillator();
+                osc.type = 'triangle';
+                const oscGain = this.ctx.createGain();
+                osc.frequency.setValueAtTime(250, time);
+                osc.frequency.exponentialRampToValueAtTime(100, time + 0.1);
+                oscGain.gain.setValueAtTime(0.3, time);
+                oscGain.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
+                osc.connect(oscGain);
+                oscGain.connect(this.masterGain);
+                osc.start(time);
+                osc.stop(time + 0.1);
+            },
+
+            playHihat(time) {
+                const bufferSize = this.ctx.sampleRate * 0.05;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1);
+                
+                const noise = this.ctx.createBufferSource();
+                noise.buffer = buffer;
+                const filter = this.ctx.createBiquadFilter();
+                filter.type = 'highpass';
+                filter.frequency.value = 8000;
+                const gain = this.ctx.createGain();
+                gain.gain.setValueAtTime(0.2, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.05);
+                
+                noise.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.masterGain);
+                noise.start(time);
+            },
+
+            playSynth(time, note, type = 'sine') {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = type;
+                
+                // Hirajoshi Scale (Japanese) for cool cyber vibes
+                // A, B, C, E, F
+                const baseFreq = 220;
+                const intervals = [1, 1.122, 1.189, 1.334, 1.498, 2];
+                const freq = baseFreq * intervals[note % intervals.length] * (Math.floor(note/5) + 1);
+
+                osc.frequency.setValueAtTime(freq, time);
+                
+                gain.gain.setValueAtTime(0.15, time);
+                gain.gain.setTargetAtTime(0, time, 0.1);
+                
+                // 将合成器送入 Delay 通道增加空间感
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+                gain.connect(this.delay); // Send to delay
+                
+                osc.start(time);
+                osc.stop(time + 0.5);
+            },
+
+            playBass(time) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                const filter = this.ctx.createBiquadFilter();
+                
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(55, time); // A1
+                
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(800, time);
+                filter.frequency.exponentialRampToValueAtTime(100, time + 0.3); // Filter sweep
+                filter.Q.value = 5;
+
+                gain.gain.setValueAtTime(0.5, time);
+                gain.gain.exponentialRampToValueAtTime(0.001, time + 0.4);
+
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.masterGain);
+                osc.start(time);
+                osc.stop(time + 0.4);
+            }
+        };
+
+        // --- 视觉渲染器 ---
+        const visualizer = {
+            canvas: document.getElementById('canvas'),
+            ctx: null,
+            width: 0, height: 0,
+            centerX: 0, centerY: 0,
+            
+            // 动画状态
+            shake: 0,
+            particles: [],
+            
+            init() {
+                this.ctx = this.canvas.getContext('2d');
+                this.resize();
+                window.addEventListener('resize', () => this.resize());
+            },
+
+            resize() {
+                this.width = this.canvas.width = window.innerWidth;
+                this.height = this.canvas.height = window.innerHeight;
+                this.centerX = this.width / 2;
+                this.centerY = this.height / 2;
+                
+                // 重新计算轨道半径
+                const minDim = Math.min(this.width, this.height);
+                const step = (minDim / 2 - 30) / (TRACK_COUNT + 1);
+                TRACK_CONFIG.forEach((t, i) => {
+                    t.radius = step * (i + 1);
+                });
+            },
+
+            shakeScreen(amount) {
+                this.shake = amount;
+            },
+
+            createExplosion(x, y, color) {
+                for(let i=0; i<8; i++) {
+                    this.particles.push({
+                        x, y, color,
+                        vx: (Math.random() - 0.5) * 5,
+                        vy: (Math.random() - 0.5) * 5,
+                        life: 1.0,
+                        size: Math.random() * 3 + 1
+                    });
+                }
+            },
+
+            draw(tracks, currentAngle, isRunning) {
+                // 1. 光影拖尾特效 (不完全清空，而是覆盖一层半透明黑)
+                this.ctx.fillStyle = 'rgba(2, 2, 2, 0.2)'; // 0.2 的透明度产生拖尾
+                this.ctx.fillRect(0, 0, this.width, this.height);
+
+                // 2. 屏幕震动应用
+                this.ctx.save();
+                if (this.shake > 0) {
+                    const dx = (Math.random() - 0.5) * this.shake;
+                    const dy = (Math.random() - 0.5) * this.shake;
+                    this.ctx.translate(dx, dy);
+                    this.shake *= 0.9; // 震动衰减
+                    if(this.shake < 0.5) this.shake = 0;
+                }
+
+                // 3. 绘制几何连线 (Polygons) - 新特性
+                // 将同一轨道激活的点连成线
+                this.ctx.lineWidth = 1;
+                TRACK_CONFIG.forEach((conf, tIdx) => {
+                    const r = conf.radius;
+                    const stepAngle = (Math.PI * 2) / STEP_COUNT;
+                    
+                    // 收集该轨道所有激活点的坐标
+                    const activePoints = [];
+                    for(let i=0; i<STEP_COUNT; i++) {
+                        if(tracks[tIdx][i]) {
+                            const a = i * stepAngle + stepAngle/2;
+                            activePoints.push({
+                                x: this.centerX + Math.cos(a) * r,
+                                y: this.centerY + Math.sin(a) * r
+                            });
+                        }
+                    }
+
+                    if (activePoints.length > 1) {
+                        this.ctx.beginPath();
+                        this.ctx.strokeStyle = conf.color + '44'; // 低透明度
+                        activePoints.forEach((p, idx) => {
+                            if(idx === 0) this.ctx.moveTo(p.x, p.y);
+                            else this.ctx.lineTo(p.x, p.y);
+                        });
+                        this.ctx.closePath();
+                        this.ctx.stroke();
+                    }
+                });
+
+                // 4. 绘制轨道圈
+                TRACK_CONFIG.forEach(t => {
+                    this.ctx.beginPath();
+                    this.ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+                    this.ctx.lineWidth = t.lineWidth;
+                    this.ctx.arc(this.centerX, this.centerY, t.radius, 0, Math.PI * 2);
+                    this.ctx.stroke();
+                });
+
+                // 5. 绘制音符点
+                const stepAngle = (Math.PI * 2) / STEP_COUNT;
+                
+                TRACK_CONFIG.forEach((conf, tIdx) => {
+                    const r = conf.radius;
+                    for (let i = 0; i < STEP_COUNT; i++) {
+                        const angle = i * stepAngle + stepAngle/2;
+                        
+                        // 计算当前点是否正在被扫描
+                        // 简单处理：判断 currentAngle 是否接近该点的 angle
+                        // 注意角度回滚问题
+                        let isScanning = false;
+                        if (isRunning) {
+                            const diff = Math.abs(angle - currentAngle);
+                            if (diff < 0.1) isScanning = true;
+                        }
+
+                        if (tracks[tIdx][i]) {
+                            // 激活状态点
+                            const x = this.centerX + Math.cos(angle) * r;
+                            const y = this.centerY + Math.sin(angle) * r;
+
+                            this.ctx.beginPath();
+                            this.ctx.fillStyle = isScanning ? '#fff' : conf.color;
+                            
+                            // 辉光效果 (Canvas Glow)
+                            this.ctx.shadowBlur = isScanning ? 20 : 10;
+                            this.ctx.shadowColor = conf.color;
+                            
+                            const size = isScanning ? 8 : 5;
+                            this.ctx.arc(x, y, size, 0, Math.PI * 2);
+                            this.ctx.fill();
+                            this.ctx.shadowBlur = 0; // 重置以防影响性能
+                        }
+                    }
+                });
+
+                // 6. 绘制雷达扫描线
+                if (isRunning) {
+                    const scanLen = Math.max(this.width, this.height);
+                    const endX = this.centerX + Math.cos(currentAngle) * scanLen;
+                    const endY = this.centerY + Math.sin(currentAngle) * scanLen;
+
+                    // 线性渐变拖尾
+                    const grad = this.ctx.createLinearGradient(this.centerX, this.centerY, endX, endY);
+                    grad.addColorStop(0, 'rgba(255, 255, 255, 0)');
+                    grad.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)');
+                    grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(this.centerX, this.centerY);
+                    this.ctx.lineTo(endX, endY);
+                    this.ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.stroke();
+
+                    // 扫描扇区 (更宽的拖尾)
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(this.centerX, this.centerY);
+                    this.ctx.arc(this.centerX, this.centerY, scanLen, currentAngle - 0.2, currentAngle);
+                    this.ctx.fillStyle = 'rgba(0, 255, 255, 0.05)';
+                    this.ctx.fill();
+                }
+
+                // 7. 粒子更新
+                for(let i = this.particles.length - 1; i >= 0; i--) {
+                    const p = this.particles[i];
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.life -= 0.03;
+                    if(p.life <= 0) {
+                        this.particles.splice(i, 1);
+                    } else {
+                        this.ctx.globalAlpha = p.life;
+                        this.ctx.fillStyle = p.color;
+                        this.ctx.beginPath();
+                        this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                        this.ctx.fill();
+                        this.ctx.globalAlpha = 1;
+                    }
+                }
+                
+                this.ctx.restore();
+            }
+        };
+
+        // --- 主逻辑 ---
+        
+        // 状态数据
+        const tracks = Array(TRACK_COUNT).fill(null).map(() => Array(STEP_COUNT).fill(false));
+        let isRunning = false;
+        let currentAngle = 0;
+        let bpm = 120;
+        let lastTime = 0;
+        let currentStep = -1;
+
+        // 交互：拖拽绘制支持
+        let isDragging = false;
+        let dragMode = true; // true=add, false=remove
+
+        function handleInput(x, y, isClick) {
+            const dx = x - visualizer.centerX;
+            const dy = y - visualizer.centerY;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            let angle = Math.atan2(dy, dx);
+            if (angle < 0) angle += Math.PI * 2;
+
+            const stepAngle = (Math.PI * 2) / STEP_COUNT;
+            const clickedStep = Math.floor(angle / stepAngle);
+            
+            // 判定点击轨道
+            let clickedTrack = -1;
+            // 增加点击宽容度
+            const tolerance = (TRACK_CONFIG[1].radius - TRACK_CONFIG[0].radius) / 2 * 0.9;
+
+            TRACK_CONFIG.forEach((t, i) => {
+                if (Math.abs(dist - t.radius) < tolerance) {
+                    clickedTrack = i;
+                }
+            });
+
+            if (clickedTrack !== -1) {
+                if (isClick) {
+                    // 点击开始：确定是添加还是删除模式
+                    dragMode = !tracks[clickedTrack][clickedStep];
+                    tracks[clickedTrack][clickedStep] = dragMode;
+                    if (dragMode) playPreview(clickedTrack, clickedStep);
+                } else {
+                    // 拖拽中：应用模式
+                    if (tracks[clickedTrack][clickedStep] !== dragMode) {
+                        tracks[clickedTrack][clickedStep] = dragMode;
+                        if (dragMode) playPreview(clickedTrack, clickedStep);
+                    }
+                }
+            }
+        }
+
+        function playPreview(trackIdx, stepIdx) {
+            triggerSound(trackIdx, stepIdx, AudioEngine.ctx.currentTime);
+            const r = TRACK_CONFIG[trackIdx].radius;
+            const stepAngle = (Math.PI * 2) / STEP_COUNT;
+            const a = stepIdx * stepAngle + stepAngle/2;
+            visualizer.createExplosion(
+                visualizer.centerX + Math.cos(a) * r,
+                visualizer.centerY + Math.sin(a) * r,
+                TRACK_CONFIG[trackIdx].color
+            );
+        }
+
+        // 声音触发映射
+        function triggerSound(trackIdx, stepIdx, time) {
+            switch(trackIdx) {
+                case 0: AudioEngine.playKick(time); break;
+                case 1: AudioEngine.playBass(time); break;
+                case 2: AudioEngine.playSnare(time); break;
+                case 3: AudioEngine.playSynth(time, stepIdx, 'triangle'); break;
+                case 4: AudioEngine.playSynth(time, stepIdx + 2, 'sine'); break; // 高八度
+                case 5: AudioEngine.playHihat(time); break;
+            }
+        }
+
+        // 动画循环
+        function loop(timestamp) {
+            const dt = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+
+            if (isRunning) {
+                const rps = (Math.PI * 2) / (60 / bpm * 4);
+                currentAngle = (currentAngle + rps * dt) % (Math.PI * 2);
+                
+                const stepAngle = (Math.PI * 2) / STEP_COUNT;
+                const nowStep = Math.floor(currentAngle / stepAngle);
+                
+                if (nowStep !== currentStep) {
+                    currentStep = nowStep;
+                    tracks.forEach((track, i) => {
+                        if (track[currentStep]) {
+                            triggerSound(i, currentStep, AudioEngine.ctx.currentTime);
+                            // 触发视觉特效
+                            const angle = currentStep * stepAngle + stepAngle/2;
+                            visualizer.createExplosion(
+                                visualizer.centerX + Math.cos(angle) * TRACK_CONFIG[i].radius,
+                                visualizer.centerY + Math.sin(angle) * TRACK_CONFIG[i].radius,
+                                TRACK_CONFIG[i].color
+                            );
+                        }
+                    });
+                }
+            }
+            
+            visualizer.draw(tracks, currentAngle, isRunning);
+            requestAnimationFrame(loop);
+        }
+
+        // --- 事件绑定 ---
+        visualizer.init();
+
+        const canvasEl = document.getElementById('canvas');
+        
+        // 鼠标事件
+        canvasEl.addEventListener('mousedown', e => {
+            isDragging = true;
+            handleInput(e.clientX, e.clientY, true);
+        });
+        window.addEventListener('mousemove', e => {
+            if (isDragging) handleInput(e.clientX, e.clientY, false);
+        });
+        window.addEventListener('mouseup', () => isDragging = false);
+
+        // 触摸事件
+        canvasEl.addEventListener('touchstart', e => {
+            e.preventDefault();
+            isDragging = true;
+            handleInput(e.touches[0].clientX, e.touches[0].clientY, true);
+        }, {passive: false});
+        canvasEl.addEventListener('touchmove', e => {
+            e.preventDefault();
+            if (isDragging) handleInput(e.touches[0].clientX, e.touches[0].clientY, false);
+        }, {passive: false});
+        window.addEventListener('touchend', () => isDragging = false);
+
+
+        // UI 按钮
+        document.getElementById('initBtn').addEventListener('click', () => {
+            AudioEngine.init();
+            document.getElementById('startScreen').style.opacity = 0;
+            setTimeout(() => {
+                document.getElementById('startScreen').style.pointerEvents = 'none';
+                isRunning = true;
+                document.getElementById('playBtn').innerHTML = '<i class="fa-solid fa-pause"></i>';
+            }, 600);
+
+            // 预设一个酷炫的 Beat
+            const kick = tracks[0]; const bass = tracks[1]; const snare = tracks[2]; const hh = tracks[5];
+            [0, 4, 8, 12].forEach(i => kick[i] = true); // 4/4 Kick
+            [4, 12].forEach(i => snare[i] = true);      // Snare
+            [2, 6, 10, 14].forEach(i => hh[i] = true);  // Hihat
+            [0, 3, 8, 11].forEach(i => bass[i] = true); // Bass Groove
+        });
+
+        document.getElementById('playBtn').addEventListener('click', () => {
+            if(!AudioEngine.ctx) return;
+            isRunning = !isRunning;
+            document.getElementById('playBtn').innerHTML = isRunning ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+        });
+
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            tracks.forEach(t => t.fill(false));
+        });
+
+        document.getElementById('randomBtn').addEventListener('click', () => {
+            tracks.forEach((t, idx) => {
+                const density = idx === 0 ? 0.2 : 0.4; // 底鼓稀疏一点
+                for(let i=0; i<STEP_COUNT; i++) t[i] = Math.random() < density;
+            });
+        });
+
+        document.getElementById('bpmRange').addEventListener('input', (e) => {
+            bpm = parseInt(e.target.value);
+            document.getElementById('bpmVal').innerText = bpm;
+        });
+
+        // 启动循环
+        requestAnimationFrame(loop);
+
+    </script>
+</body>
+</html>
