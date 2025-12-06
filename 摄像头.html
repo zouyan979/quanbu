@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>无线WebRTC摄像头连接</title>
+    <!-- 引入 Tailwind CSS 进行快速样式设计 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 PeerJS 库，用于简化 WebRTC 连接 -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <!-- 引入 FontAwesome 图标 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            aspect-ratio: 16/9;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .overlay-status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.6);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .recording-dot {
+            width: 10px;
+            height: 10px;
+            background-color: red;
+            border-radius: 50%;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+        .btn-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+
+    <!-- 1. 初始选择界面 -->
+    <div id="selection-screen" class="w-full max-w-md bg-gray-800 p-8 rounded-2xl shadow-2xl text-center space-y-6">
+        <h1 class="text-3xl font-bold text-blue-400 mb-2">无线摄像头连接</h1>
+        <p class="text-gray-400 text-sm mb-6">请选择当前设备的角色</p>
+        
+        <div class="grid grid-cols-1 gap-4">
+            <button onclick="startSenderMode()" class="btn-hover bg-gradient-to-r from-blue-600 to-blue-500 text-white py-4 px-6 rounded-xl flex items-center justify-center gap-3 transition-all duration-200">
+                <i class="fas fa-camera text-2xl"></i>
+                <div class="text-left">
+                    <div class="font-bold text-lg">我是摄像头 (手机)</div>
+                    <div class="text-xs text-blue-100 opacity-80">发送视频流</div>
+                </div>
+            </button>
+
+            <button onclick="startReceiverMode()" class="btn-hover bg-gradient-to-r from-purple-600 to-purple-500 text-white py-4 px-6 rounded-xl flex items-center justify-center gap-3 transition-all duration-200">
+                <i class="fas fa-desktop text-2xl"></i>
+                <div class="text-left">
+                    <div class="font-bold text-lg">我是监控屏 (电脑)</div>
+                    <div class="text-xs text-purple-100 opacity-80">接收并观看视频</div>
+                </div>
+            </button>
+        </div>
+        <p class="text-xs text-gray-500 mt-4">注意：需要允许摄像头权限，且建议在同一WiFi下使用。</p>
+    </div>
+
+    <!-- 2. 发送端界面 (手机) -->
+    <div id="sender-screen" class="hidden w-full max-w-lg flex flex-col items-center space-y-4">
+        <div class="bg-gray-800 w-full p-4 rounded-xl shadow-lg border border-gray-700">
+            <h2 class="text-xl font-bold text-blue-400 mb-2"><i class="fas fa-signal"></i> 发送端就绪</h2>
+            <div class="text-sm text-gray-300 mb-4">请在接收端输入下方的 ID:</div>
+            
+            <div class="flex items-center gap-2 bg-gray-900 p-3 rounded-lg border border-gray-600 mb-4">
+                <code id="my-peer-id" class="text-2xl font-mono text-green-400 tracking-wider flex-1 text-center">生成中...</code>
+                <button onclick="copyId()" class="p-2 bg-gray-700 hover:bg-gray-600 rounded text-white transition">
+                    <i class="fas fa-copy"></i>
+                </button>
+            </div>
+            
+            <p class="text-xs text-yellow-500"><i class="fas fa-info-circle"></i> 保持此页面开启，屏幕不要关闭。</p>
+        </div>
+
+        <div class="video-container">
+            <video id="local-video" autoplay playsinline muted></video>
+            <div class="overlay-status">
+                <div class="recording-dot"></div>
+                <span>正在直播</span>
+            </div>
+        </div>
+        
+        <button onclick="location.reload()" class="px-6 py-2 bg-red-600 hover:bg-red-700 rounded-full text-white transition">
+            <i class="fas fa-power-off mr-2"></i> 断开连接
+        </button>
+    </div>
+
+    <!-- 3. 接收端界面 (电脑) -->
+    <div id="receiver-screen" class="hidden w-full max-w-4xl flex flex-col items-center space-y-6">
+        <div id="connect-panel" class="bg-gray-800 p-6 rounded-xl shadow-lg w-full max-w-md border border-gray-700">
+            <h2 class="text-xl font-bold text-purple-400 mb-4"><i class="fas fa-link"></i> 连接到摄像头</h2>
+            <div class="flex gap-2">
+                <input type="text" id="target-id" placeholder="输入手机端显示的 ID" class="flex-1 bg-gray-900 border border-gray-600 text-white px-4 py-3 rounded-lg focus:outline-none focus:border-purple-500 transition font-mono text-lg">
+                <button onclick="connectToPeer()" id="btn-connect" class="bg-purple-600 hover:bg-purple-500 text-white px-6 py-3 rounded-lg font-bold transition">
+                    连接
+                </button>
+            </div>
+            <p id="status-msg" class="text-sm text-gray-400 mt-2 h-5">等待输入...</p>
+        </div>
+
+        <div id="video-wrapper" class="hidden w-full flex flex-col items-center space-y-4">
+            <div class="video-container border-2 border-purple-500/30">
+                <video id="remote-video" autoplay playsinline></video>
+                <div class="overlay-status text-green-400">
+                    <i class="fas fa-wifi"></i>
+                    <span>信号已连接</span>
+                </div>
+            </div>
+            <button onclick="location.reload()" class="px-6 py-2 bg-gray-700 hover:bg-gray-600 rounded-full text-white transition">
+                <i class="fas fa-arrow-left mr-2"></i> 返回
+            </button>
+        </div>
+    </div>
+
+    <script>
+        let peer = null;
+        let localStream = null;
+
+        // 切换界面显示
+        function showScreen(screenId) {
+            document.getElementById('selection-screen').classList.add('hidden');
+            document.getElementById('sender-screen').classList.add('hidden');
+            document.getElementById('receiver-screen').classList.add('hidden');
+            document.getElementById(screenId).classList.remove('hidden');
+        }
+
+        // --- 发送端逻辑 (手机) ---
+        async function startSenderMode() {
+            showScreen('sender-screen');
+            
+            try {
+                // 1. 获取摄像头权限
+                // facingMode: 'environment' 优先使用后置摄像头
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, 
+                    audio: true 
+                });
+                
+                // 显示本地预览
+                const videoEl = document.getElementById('local-video');
+                videoEl.srcObject = localStream;
+
+                // 2. 初始化 PeerJS
+                initPeer('sender');
+
+            } catch (err) {
+                alert("无法访问摄像头: " + err.message + "\n请确保使用HTTPS访问或已授权。");
+                location.reload();
+            }
+        }
+
+        // --- 接收端逻辑 (电脑) ---
+        function startReceiverMode() {
+            showScreen('receiver-screen');
+            initPeer('receiver');
+        }
+
+        // --- WebRTC 核心逻辑 ---
+        function initPeer(role) {
+            // 创建 Peer 对象 (使用 PeerJS 官方免费云服务器)
+            peer = new Peer(null, {
+                debug: 2
+            });
+
+            peer.on('open', (id) => {
+                console.log('My peer ID is: ' + id);
+                if (role === 'sender') {
+                    document.getElementById('my-peer-id').innerText = id;
+                }
+            });
+
+            // 错误处理
+            peer.on('error', (err) => {
+                console.error(err);
+                if(role === 'receiver') {
+                    updateStatus('连接错误: ' + err.type, 'text-red-500');
+                    document.getElementById('btn-connect').disabled = false;
+                    document.getElementById('btn-connect').innerText = '重试';
+                }
+            });
+
+            // 处理呼叫 (仅发送端需要处理被呼叫的情况)
+            if (role === 'sender') {
+                peer.on('call', (call) => {
+                    // 当收到呼叫时，接听并发送本地视频流
+                    call.answer(localStream);
+                });
+            }
+        }
+
+        // 接收端：主动连接发送端
+        function connectToPeer() {
+            const targetId = document.getElementById('target-id').value.trim();
+            if (!targetId) return;
+
+            const btn = document.getElementById('btn-connect');
+            btn.disabled = true;
+            btn.innerText = '连接中...';
+            updateStatus('正在寻找设备...', 'text-yellow-400');
+
+            // 发起呼叫
+            const call = peer.call(targetId, null); // 接收端不需要发送流，只接收，所以传null或dummy stream
+
+            if (!call) {
+                updateStatus('连接失败，请检查ID', 'text-red-500');
+                btn.disabled = false;
+                return;
+            }
+
+            // 当对方接听并传回流时
+            call.on('stream', (remoteStream) => {
+                updateStatus('连接成功！', 'text-green-400');
+                document.getElementById('connect-panel').classList.add('hidden');
+                document.getElementById('video-wrapper').classList.remove('hidden');
+                
+                const remoteVideo = document.getElementById('remote-video');
+                remoteVideo.srcObject = remoteStream;
+            });
+
+            // 监听关闭
+            call.on('close', () => {
+                alert('对方已断开连接');
+                location.reload();
+            });
+
+            // 3秒后如果没有连接上，重置按钮 (简单的超时处理)
+            setTimeout(() => {
+                if(document.getElementById('video-wrapper').classList.contains('hidden')) {
+                     // 并不一定是失败，可能是网络慢，这里只是恢复按钮状态
+                     // btn.disabled = false;
+                     // btn.innerText = '连接';
+                }
+            }, 5000);
+        }
+
+        // 辅助功能：复制ID
+        function copyId() {
+            const idText = document.getElementById('my-peer-id').innerText;
+            if (idText === '生成中...') return;
+            
+            // 使用 Clipboard API 复制
+            const textArea = document.createElement("textarea");
+            textArea.value = idText;
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                alert("ID 已复制: " + idText);
+            } catch (err) {
+                console.error('复制失败', err);
+            }
+            document.body.removeChild(textArea);
+        }
+
+        function updateStatus(msg, colorClass) {
+            const el = document.getElementById('status-msg');
+            el.innerText = msg;
+            el.className = 'text-sm mt-2 h-5 ' + colorClass;
+        }
+
+        // 页面关闭时清理资源
+        window.addEventListener('beforeunload', () => {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            if (peer) {
+                peer.destroy();
+            }
+        });
+
+    </script>
+</body>
+</html>
