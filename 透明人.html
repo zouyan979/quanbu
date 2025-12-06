@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>魔法相机：隐形斗篷 & 影分身</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #0f172a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow-x: hidden;
+            /* 防止手机下拉刷新影响操作 */
+            overscroll-behavior-y: contain; 
+        }
+        
+        .magic-border {
+            position: relative;
+            background: #1e293b;
+            padding: 4px;
+            border-radius: 12px;
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+            transition: all 0.3s ease;
+        }
+
+        .magic-border.active-magic {
+            box-shadow: 0 0 40px rgba(168, 85, 247, 0.8);
+            border: 2px solid rgba(168, 85, 247, 0.8);
+        }
+
+        canvas {
+            border-radius: 8px;
+            width: 100%;
+            height: auto;
+            /* 默认镜像翻转，后置摄像头时我们会通过JS移除这个类 */
+            transform: scaleX(-1); 
+        }
+        
+        canvas.no-mirror {
+            transform: scaleX(1);
+        }
+        
+        .control-panel {
+            background: rgba(30, 41, 59, 0.95);
+            backdrop-filter: blur(10px);
+        }
+
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 20px; /* 手机上加大滑块 */
+            width: 20px;
+            border-radius: 50%;
+            background: #a855f7;
+            cursor: pointer;
+            margin-top: -8px;
+            box-shadow: 0 0 10px rgba(168, 85, 247, 0.8);
+        }
+        
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #475569;
+            border-radius: 2px;
+        }
+
+        .btn-mode {
+            transition: all 0.2s;
+            border: 2px solid transparent;
+        }
+        
+        .btn-mode.active {
+            border-color: #a855f7;
+            background-color: rgba(168, 85, 247, 0.2);
+            color: #d8b4fe;
+        }
+
+        .flash-effect {
+            animation: flash 0.3s ease-out;
+        }
+
+        @keyframes flash {
+            0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.8) inset; }
+            100% { box-shadow: 0 0 0 50px rgba(255, 255, 255, 0) inset; }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-2 md:p-4">
+
+    <!-- 标题区 -->
+    <div class="text-center mb-2 z-10 w-full flex justify-between items-center max-w-3xl px-2">
+        <div>
+            <h1 class="text-xl md:text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
+                <i class="fa-solid fa-wand-magic-sparkles mr-1"></i>魔法相机
+            </h1>
+        </div>
+        <!-- 摄像头切换按钮 -->
+        <button id="switchCamBtn" class="bg-slate-700/80 hover:bg-slate-600 text-white rounded-full p-2 w-10 h-10 flex items-center justify-center shadow-lg transition">
+            <i class="fa-solid fa-camera-rotate"></i>
+        </button>
+    </div>
+
+    <!-- 主显示区 -->
+    <div class="w-full max-w-3xl relative group">
+        <!-- 状态标签 -->
+        <div id="statusBadge" class="absolute top-4 right-4 z-20 bg-red-500/80 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg backdrop-blur-sm transition-all duration-300">
+            未捕捉背景
+        </div>
+        
+        <div id="videoContainer" class="magic-border">
+            <video id="webcam" autoplay playsinline class="hidden"></video>
+            <canvas id="outputCanvas"></canvas>
+            
+            <div id="loader" class="absolute inset-0 flex items-center justify-center bg-slate-900 z-30 rounded-lg">
+                <div class="text-center">
+                    <div class="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500 mb-2"></div>
+                    <p class="text-blue-400 text-sm">正在启动摄像头...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 控制面板 -->
+    <div class="control-panel w-full max-w-3xl mt-4 p-4 rounded-xl border border-slate-700 shadow-2xl space-y-4">
+        
+        <!-- 核心操作区 -->
+        <div class="flex flex-col gap-3">
+            <button id="captureBtn" class="group relative w-full bg-gradient-to-r from-blue-600 to-indigo-600 active:from-blue-700 active:to-indigo-700 text-white font-bold py-4 px-6 rounded-xl shadow-lg transform transition active:scale-95 border-b-4 border-indigo-800 active:border-b-0">
+                <div class="flex items-center justify-center text-lg">
+                    <i class="fa-solid fa-camera mr-2 group-hover:animate-pulse"></i>
+                    <span>第一步：捕捉纯净背景</span>
+                </div>
+                <div class="text-xs font-normal opacity-80 mt-1">请先移出画面，确保背景只有墙壁</div>
+            </button>
+            
+            <div class="grid grid-cols-3 gap-2">
+                 <div class="col-span-2 bg-slate-800/50 p-3 rounded-lg border border-slate-700 flex flex-col justify-center">
+                    <div class="flex justify-between mb-1">
+                        <label class="text-xs font-bold text-purple-300 uppercase tracking-wider">灵敏度</label>
+                        <span id="thresholdVal" class="text-xs text-slate-400 font-mono">30</span>
+                    </div>
+                    <input type="range" id="thresholdRange" min="10" max="100" value="30" class="w-full touch-pan-x">
+                </div>
+
+                <button id="resetBtn" class="col-span-1 bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium p-2 rounded-lg transition text-xs flex flex-col items-center justify-center">
+                    <i class="fa-solid fa-rotate-right text-lg mb-1"></i> 
+                    <span>重置</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- 魔法功能区 (背景捕捉后才可用) -->
+        <div id="magicTools" class="opacity-50 pointer-events-none transition-all duration-500 border-t border-slate-700 pt-4">
+            <h3 class="text-sm text-slate-400 mb-3 font-semibold uppercase tracking-wider text-center md:text-left">选择魔法模式</h3>
+            
+            <div class="grid grid-cols-4 gap-2">
+                <!-- 模式选择 -->
+                <button class="btn-mode active bg-slate-800 hover:bg-slate-700 text-white py-3 px-1 rounded-lg flex flex-col items-center justify-center gap-1" onclick="setMode('invisible')">
+                    <i class="fa-solid fa-ghost text-xl text-blue-400"></i>
+                    <span class="text-[10px] md:text-xs font-medium">隐形</span>
+                </button>
+                
+                <button class="btn-mode bg-slate-800 hover:bg-slate-700 text-white py-3 px-1 rounded-lg flex flex-col items-center justify-center gap-1" onclick="setMode('disco')">
+                    <i class="fa-solid fa-compact-disc text-xl text-pink-400"></i>
+                    <span class="text-[10px] md:text-xs font-medium">迪斯科</span>
+                </button>
+
+                <button class="btn-mode bg-slate-800 hover:bg-slate-700 text-white py-3 px-1 rounded-lg flex flex-col items-center justify-center gap-1" onclick="setMode('ghost')">
+                    <i class="fa-solid fa-cloud text-xl text-gray-400"></i>
+                    <span class="text-[10px] md:text-xs font-medium">幽灵</span>
+                </button>
+
+                <!-- 动作按钮 -->
+                <button id="cloneBtn" class="bg-gradient-to-br from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white py-3 px-1 rounded-lg flex flex-col items-center justify-center gap-1 shadow-lg transform active:scale-95 transition">
+                    <i class="fa-solid fa-people-arrows text-xl"></i>
+                    <span class="text-[10px] md:text-xs font-bold">影分身</span>
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('outputCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        
+        // UI Elements
+        const captureBtn = document.getElementById('captureBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const cloneBtn = document.getElementById('cloneBtn');
+        const switchCamBtn = document.getElementById('switchCamBtn');
+        const thresholdRange = document.getElementById('thresholdRange');
+        const thresholdVal = document.getElementById('thresholdVal');
+        const loader = document.getElementById('loader');
+        const statusBadge = document.getElementById('statusBadge');
+        const magicTools = document.getElementById('magicTools');
+        const container = document.getElementById('videoContainer');
+        const modeButtons = document.querySelectorAll('.btn-mode');
+
+        // State
+        let width = 640;
+        let height = 480;
+        let backgroundData = null; 
+        let isBackgroundCaptured = false;
+        let currentMode = 'invisible'; 
+        let useFrontCamera = true;
+        let currentStream = null;
+
+        // Mode Switching Logic
+        window.setMode = (mode) => {
+            currentMode = mode;
+            modeButtons.forEach(btn => btn.classList.remove('active'));
+            const iconMap = {
+                'invisible': 'fa-ghost',
+                'disco': 'fa-compact-disc',
+                'ghost': 'fa-cloud'
+            };
+            modeButtons.forEach(btn => {
+                if(btn.innerHTML.includes(iconMap[mode])) btn.classList.add('active');
+            });
+        };
+
+        async function setupCamera() {
+            loader.style.display = 'flex';
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+
+            const constraints = {
+                video: {
+                    facingMode: useFrontCamera ? "user" : "environment",
+                    // Ideal resolution for mobile performance
+                    width: { ideal: 640 },
+                    height: { ideal: 480 } 
+                },
+                audio: false
+            };
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                currentStream = stream;
+                video.srcObject = stream;
+                
+                // Flip canvas horizontally only if using front camera
+                if (useFrontCamera) {
+                    canvas.classList.remove('no-mirror');
+                } else {
+                    canvas.classList.add('no-mirror');
+                }
+
+                return new Promise(resolve => {
+                    video.onloadedmetadata = () => {
+                        // 强制限制 Canvas 的内部渲染尺寸以保证性能
+                        // 但 Canvas CSS 会让它在屏幕上全宽显示
+                        const maxDim = 640;
+                        const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+                        
+                        width = Math.floor(video.videoWidth * scale);
+                        height = Math.floor(video.videoHeight * scale);
+                        
+                        canvas.width = width;
+                        canvas.height = height;
+                        
+                        // 重置状态
+                        isBackgroundCaptured = false;
+                        backgroundData = null;
+                        statusBadge.innerText = "未捕捉背景";
+                        statusBadge.className = "absolute top-4 right-4 z-20 bg-red-500/80 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg backdrop-blur-sm";
+                        magicTools.classList.add('opacity-50', 'pointer-events-none');
+                        container.classList.remove('active-magic');
+                        
+                        loader.style.display = 'none';
+                        resolve();
+                    };
+                });
+            } catch (err) {
+                loader.innerHTML = `<p class="text-red-500 px-4 text-xs">无法访问摄像头: ${err.message}<br>请使用 HTTPS 或 localhost。</p>`;
+                console.error(err);
+            }
+        }
+
+        function render() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                ctx.drawImage(video, 0, 0, width, height);
+
+                if (isBackgroundCaptured && backgroundData) {
+                    const frameData = ctx.getImageData(0, 0, width, height);
+                    const current = frameData.data;
+                    const bg = backgroundData.data;
+                    const len = current.length;
+                    const threshold = parseInt(thresholdRange.value);
+
+                    // Pre-calculate disco colors
+                    const time = Date.now() * 0.002;
+                    const rBase = Math.sin(time) * 127 + 128;
+                    const gBase = Math.sin(time + 2) * 127 + 128;
+                    const bBase = Math.sin(time + 4) * 127 + 128;
+
+                    for (let i = 0; i < len; i += 4) {
+                        const r = current[i], g = current[i+1], b = current[i+2];
+                        const bgR = bg[i], bgG = bg[i+1], bgB = bg[i+2];
+
+                        // Simplified pixel diff for performance
+                        const diff = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
+
+                        if (diff > threshold) {
+                            if (currentMode === 'invisible') {
+                                current[i] = bgR;
+                                current[i+1] = bgG;
+                                current[i+2] = bgB;
+                            } else if (currentMode === 'disco') {
+                                current[i] = (rBase + i % 255) % 255; 
+                                current[i+1] = (gBase + (i/width) % 255) % 255;
+                                current[i+2] = bBase;
+                                current[i] = (current[i] * 0.7) + (r * 0.3); 
+                            } else if (currentMode === 'ghost') {
+                                current[i] = (r + bgR) * 0.5;
+                                current[i+1] = (g + bgG) * 0.5;
+                                current[i+2] = (b + bgB) * 0.5;
+                                current[i+3] = 120; 
+                            }
+                        } else {
+                            if (currentMode === 'disco') {
+                                current[i] = r * 0.8;
+                                current[i+1] = g * 0.8;
+                                current[i+2] = b * 0.8;
+                            }
+                        }
+                    }
+                    ctx.putImageData(frameData, 0, 0);
+                }
+            }
+            requestAnimationFrame(render);
+        }
+
+        // Event Listeners
+        captureBtn.addEventListener('click', () => {
+            ctx.drawImage(video, 0, 0, width, height);
+            backgroundData = ctx.getImageData(0, 0, width, height);
+            isBackgroundCaptured = true;
+            statusBadge.innerText = "魔法已激活";
+            statusBadge.className = "absolute top-4 right-4 z-20 bg-purple-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg animate-pulse";
+            container.classList.add('active-magic');
+            magicTools.classList.remove('opacity-50', 'pointer-events-none');
+            container.classList.add('flash-effect');
+            setTimeout(() => container.classList.remove('flash-effect'), 300);
+        });
+
+        resetBtn.addEventListener('click', () => {
+            isBackgroundCaptured = false;
+            backgroundData = null;
+            statusBadge.innerText = "未捕捉背景";
+            statusBadge.className = "absolute top-4 right-4 z-20 bg-red-500/80 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg backdrop-blur-sm";
+            container.classList.remove('active-magic');
+            magicTools.classList.add('opacity-50', 'pointer-events-none');
+        });
+
+        cloneBtn.addEventListener('click', () => {
+            if (!isBackgroundCaptured) return;
+            ctx.drawImage(video, 0, 0, width, height);
+            const currentFrame = ctx.getImageData(0, 0, width, height);
+            const currentPx = currentFrame.data;
+            const bgPx = backgroundData.data;
+            const threshold = parseInt(thresholdRange.value);
+
+            for (let i = 0; i < currentPx.length; i += 4) {
+                const diff = Math.abs(currentPx[i] - bgPx[i]) + Math.abs(currentPx[i+1] - bgPx[i+1]) + Math.abs(currentPx[i+2] - bgPx[i+2]);
+                if (diff > threshold) {
+                    bgPx[i] = currentPx[i];
+                    bgPx[i+1] = currentPx[i+1];
+                    bgPx[i+2] = currentPx[i+2];
+                }
+            }
+            const flash = document.createElement('div');
+            flash.className = 'absolute inset-0 bg-white/50 z-50 transition-opacity duration-300';
+            container.appendChild(flash);
+            setTimeout(() => flash.classList.add('opacity-0'), 50);
+            setTimeout(() => flash.remove(), 350);
+        });
+        
+        // Switch Camera
+        switchCamBtn.addEventListener('click', () => {
+            useFrontCamera = !useFrontCamera;
+            setupCamera();
+        });
+
+        thresholdRange.addEventListener('input', (e) => thresholdVal.innerText = e.target.value);
+
+        setupCamera().then(render);
+
+    </script>
+</body>
+</html>
