@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>123 木头人 - 全平台通用版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Roboto+Mono:wght@500&display=swap');
+
+        body {
+            background-color: #111;
+            font-family: 'Roboto Mono', monospace;
+            overflow: hidden;
+            touch-action: none;
+            transition: background-color 0.5s;
+        }
+
+        /* 状态颜色 */
+        .state-green { background-color: #10b981; }
+        .state-red { background-color: #ef4444; transition: background-color 0.1s; }
+        .state-dead { background-color: #000; }
+
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+
+        /* 优化策略：
+           Video 元素仅用于采集数据，不直接显示，避免手机端部分浏览器强制全屏播放器接管
+        */
+        video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* Canvas 负责所有渲染 */
+        canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            /* 类似于 CSS 的 object-fit: cover，但在 JS 里手动计算以兼容所有设备 */
+            display: block; 
+        }
+
+        .mirror { transform: scaleX(-1); }
+
+        /* UI 层 */
+        .overlay {
+            position: absolute;
+            z-index: 20;
+            inset: 0;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+        }
+
+        /* 动作条 */
+        .motion-meter-container {
+            position: absolute;
+            right: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 15px;
+            height: 200px;
+            background: rgba(0,0,0,0.5);
+            border: 2px solid #555;
+            border-radius: 10px;
+            overflow: hidden;
+            transition: all 0.3s;
+        }
+
+        .motion-meter-container.calibrating {
+            transform: translateY(-50%) scale(1.2);
+            border-color: #0f0;
+            box-shadow: 0 0 15px #0f0;
+        }
+        
+        .motion-bar {
+            width: 100%;
+            background: linear-gradient(to top, #0f0, #ff0, #f00);
+            position: absolute;
+            bottom: 0;
+            transition: height 0.1s;
+        }
+
+        .threshold-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background: white;
+            z-index: 5;
+            box-shadow: 0 0 4px black;
+        }
+
+        /* 状态图标 */
+        .doll-icon {
+            font-size: 60px;
+            text-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            transition: transform 0.3s;
+        }
+
+        .animate-head-turn { animation: headTurn 0.5s ease-in-out; }
+        @keyframes headTurn { 0%, 100% { transform: rotateY(0deg); } 50% { transform: rotateY(180deg); } }
+
+        /* 淘汰文字 */
+        .eliminated-text {
+            font-family: 'Black Ops One', cursive;
+            color: #ff0000;
+            text-shadow: 0 0 20px rgba(255,0,0,0.8);
+            letter-spacing: 5px;
+            transform: rotate(-10deg);
+            animation: stamp 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        @keyframes stamp { from { opacity: 0; transform: scale(3) rotate(-10deg); } to { opacity: 1; transform: scale(1) rotate(-10deg); } }
+
+        .controls { pointer-events: auto; }
+        
+        /* 电脑端优化：鼠标样式 */
+        @media (min-width: 768px) {
+            #startBtn { cursor: pointer; }
+            input[type=range] { cursor: pointer; }
+        }
+    </style>
+</head>
+<body id="body" class="bg-gray-900 text-white select-none">
+
+    <div id="gameContainer">
+        <!-- 原始视频流 (隐藏) -->
+        <video id="video" autoplay playsinline muted></video>
+        
+        <!-- 计算专用 (分辨率根据设备动态调整) -->
+        <canvas id="motionCanvas" class="hidden"></canvas>
+        
+        <!-- 显示专用 (高清) -->
+        <canvas id="displayCanvas" class="mirror"></canvas>
+
+        <div class="overlay">
+            <!-- 顶部 -->
+            <div class="flex justify-between items-start">
+                <div class="bg-black/60 px-4 py-2 rounded-lg backdrop-blur-sm border border-white/20">
+                    <div class="text-[10px] text-gray-400 uppercase tracking-widest">Time</div>
+                    <div id="scoreDisplay" class="text-2xl font-bold text-green-400 font-mono">00:00</div>
+                </div>
+                <div id="statusIcon" class="doll-icon text-green-500">
+                    <i class="fa-solid fa-child-reaching"></i>
+                </div>
+            </div>
+
+            <!-- 设备模式提示 -->
+            <div id="deviceTag" class="absolute top-4 left-1/2 transform -translate-x-1/2 opacity-50 text-[10px] text-gray-400 bg-black/30 px-2 py-1 rounded-full border border-gray-700">
+                Detecting Device...
+            </div>
+
+            <!-- 校准提示 -->
+            <div id="calibrationTip" class="absolute top-24 left-0 right-0 text-center opacity-0 transition-opacity duration-300">
+                <span class="bg-black/80 text-green-400 px-4 py-2 rounded-full text-xs font-bold border border-green-500 shadow-lg">
+                    <i class="fa-solid fa-eye mr-1"></i> 视觉校准中...
+                </span>
+            </div>
+
+            <!-- 侧边条 -->
+            <div id="meterContainer" class="motion-meter-container">
+                <div id="thresholdLine" class="threshold-line" style="bottom: 30%"></div>
+                <div id="motionBar" class="motion-bar" style="height: 0%"></div>
+            </div>
+
+            <!-- 底部控制区 -->
+            <div class="w-full flex flex-col items-center justify-end pb-8 controls">
+                
+                <!-- 开始面板 -->
+                <div id="startPanel" class="text-center bg-black/85 p-6 rounded-2xl border border-gray-700 backdrop-blur-xl shadow-2xl max-w-sm w-full transition-all duration-300">
+                    <h1 class="text-3xl font-bold mb-1 text-red-500 font-['Black_Ops_One']">RED LIGHT</h1>
+                    <p class="text-gray-400 text-xs mb-6 uppercase tracking-[0.2em]">Green Light</p>
+                    
+                    <button id="startBtn" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white font-bold py-4 rounded-xl shadow-lg shadow-green-900/50 transition active:scale-95 text-lg mb-6">
+                        开始挑战
+                    </button>
+
+                    <div class="pt-4 border-t border-gray-700">
+                        <div class="flex justify-between text-[10px] font-bold mb-2 uppercase text-gray-500">
+                            <span>Sensitive</span>
+                            <span>Stable</span>
+                        </div>
+                        <input type="range" id="sensitivityRange" min="10" max="100" value="50" 
+                               class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                        <p class="text-[10px] text-gray-500 mt-2">按住滑块可查看噪点</p>
+                    </div>
+                </div>
+
+                <!-- 结束面板 -->
+                <div id="gameOverPanel" class="hidden absolute inset-0 flex flex-col items-center justify-center bg-black/95 z-50 transition-opacity duration-300">
+                    <h1 class="eliminated-text text-6xl md:text-7xl mb-6 border-4 border-red-600 p-4 transform -rotate-6">淘汰</h1>
+                    <p class="text-white text-lg mb-8 font-bold">被抓住了！</p>
+                    <p class="text-gray-500 text-sm mb-2 uppercase">Survival Time</p>
+                    <p id="finalScore" class="text-4xl text-green-400 font-mono mb-10">00:00</p>
+                    
+                    <div class="flex flex-col gap-3 w-64">
+                        <button id="restartBtn" class="w-full bg-white text-black font-bold py-3 rounded-full hover:bg-gray-200 transition active:scale-95">
+                            再试一次
+                        </button>
+                        <button id="homeBtn" class="w-full bg-transparent border border-gray-600 text-gray-400 font-bold py-3 rounded-full hover:bg-gray-800 hover:text-white transition active:scale-95 text-sm">
+                            返回主页
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const video = document.getElementById('video');
+        const motionCanvas = document.getElementById('motionCanvas');
+        const displayCanvas = document.getElementById('displayCanvas');
+        
+        const motionCtx = motionCanvas.getContext('2d', { willReadFrequently: true });
+        const displayCtx = displayCanvas.getContext('2d');
+
+        const body = document.getElementById('body');
+        const startBtn = document.getElementById('startBtn');
+        const restartBtn = document.getElementById('restartBtn');
+        const homeBtn = document.getElementById('homeBtn');
+        const startPanel = document.getElementById('startPanel');
+        const gameOverPanel = document.getElementById('gameOverPanel');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const finalScore = document.getElementById('finalScore');
+        const motionBar = document.getElementById('motionBar');
+        const meterContainer = document.getElementById('meterContainer');
+        const thresholdLine = document.getElementById('thresholdLine');
+        const sensitivityRange = document.getElementById('sensitivityRange');
+        const statusIcon = document.getElementById('statusIcon');
+        const calibrationTip = document.getElementById('calibrationTip');
+        const deviceTag = document.getElementById('deviceTag');
+
+        // State
+        let isGameRunning = false;
+        let isCalibrating = false;
+        let gameState = 'WAITING';
+        let startTime = 0;
+        let scoreInterval;
+        let loopId;
+        
+        // --- 核心优化：智能设备检测 ---
+        // 简单判断是否为移动设备
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        
+        // 动态设置计算参数
+        // 手机：极速模式 (160x120), 电脑：高清模式 (320x240)
+        let CALC_WIDTH = isMobile ? 160 : 320; 
+        let CALC_HEIGHT = isMobile ? 120 : 240; 
+        let sensitivity = 50; 
+        let frameCount = 0;
+        let prevFrame = null;
+        
+        // 显示当前模式
+        deviceTag.innerHTML = isMobile ? 
+            '<i class="fa-solid fa-mobile-screen mr-1"></i> Mobile Mode (Fast)' : 
+            '<i class="fa-solid fa-desktop mr-1"></i> Desktop Mode (HD)';
+
+        // Audio
+        const synth = window.speechSynthesis;
+        let audioCtx;
+
+        // 1. 初始化摄像头 (智能适配分辨率)
+        async function init() {
+            try {
+                // 根据设备请求不同的视频流质量
+                const constraints = {
+                    video: { 
+                        // 手机请求 640x480 足够清晰且快
+                        // 电脑请求 1280x720 获得更好体验
+                        width: { ideal: isMobile ? 640 : 1280 }, 
+                        height: { ideal: isMobile ? 480 : 720 },
+                        facingMode: "user" 
+                    },
+                    audio: false
+                };
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = () => {
+                    video.play(); 
+                    
+                    // 设置计算画布
+                    motionCanvas.width = CALC_WIDTH;
+                    motionCanvas.height = CALC_HEIGHT;
+
+                    // 设置显示画布
+                    resizeDisplayCanvas();
+                    window.addEventListener('resize', resizeDisplayCanvas);
+
+                    update();
+                };
+            } catch (err) {
+                console.error(err);
+                if (window.location.protocol !== 'file:') {
+                    alert("摄像头启动失败：请确保允许浏览器访问摄像头。");
+                }
+            }
+        }
+
+        function resizeDisplayCanvas() {
+            displayCanvas.width = window.innerWidth;
+            displayCanvas.height = window.innerHeight;
+        }
+
+        // 2. 核心循环
+        function update() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                
+                // A. 绘制显示层 (智能 Cover 模式)
+                drawVideoCover(displayCtx, video, displayCanvas.width, displayCanvas.height);
+
+                // B. 计算层 (节流策略)
+                frameCount++;
+                // 手机端每 3 帧算一次，电脑端每 2 帧算一次（电脑性能好，检测更跟手）
+                const skipFrames = isMobile ? 3 : 2;
+                
+                if (frameCount % skipFrames === 0 || isCalibrating) {
+                    
+                    motionCtx.drawImage(video, 0, 0, CALC_WIDTH, CALC_HEIGHT);
+                    const frameData = motionCtx.getImageData(0, 0, CALC_WIDTH, CALC_HEIGHT);
+                    
+                    if (isCalibrating) {
+                        visualizeCalibration(frameData);
+                    }
+                    
+                    const score = calculateMotionScore(frameData.data);
+                    updateMotionBar(score);
+                    
+                    if (isGameRunning && gameState === 'RED') {
+                        // 阈值算法：根据分辨率动态调整基数
+                        // 电脑分辨率高，像素点多，score 会更大，所以阈值系数要按比例放大
+                        const baseThreshold = isMobile ? 800 : 3200; 
+                        const threshold = (120 - sensitivity) * baseThreshold; 
+                        
+                        if (score > threshold) {
+                            gameOver();
+                        }
+                    }
+                }
+            }
+            loopId = requestAnimationFrame(update);
+        }
+
+        // 辅助：模拟 Object-fit: cover (核心适配逻辑)
+        // 无论横屏竖屏，自动居中裁切填充
+        function drawVideoCover(ctx, video, w, h) {
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            const videoRatio = vw / vh;
+            const screenRatio = w / h;
+            
+            let drawW, drawH, startX, startY;
+
+            if (screenRatio > videoRatio) {
+                drawW = w;
+                drawH = w / videoRatio;
+                startX = 0;
+                startY = (h - drawH) / 2;
+            } else {
+                drawW = h * videoRatio;
+                drawH = h;
+                startX = (w - drawW) / 2;
+                startY = 0;
+            }
+            
+            // 镜像翻转绘制
+            ctx.save();
+            ctx.translate(w, 0);
+            ctx.scale(-1, 1);
+            // 注意：因为翻转了坐标系，x 坐标需要反算
+            // 如果要在翻转后的画布上画在视觉上的 (x,y)，实际需要画在 (-x-width, y) ?
+            // 其实最简单的是翻转整个画布，然后画图位置如果是居中，逻辑不变，但x轴方向变了
+            // 这里我们已经在 CSS 里对 displayCanvas 做了 .mirror (scaleX(-1))
+            // 所以 JS 里不需要再翻转，直接画即可。
+            // 恢复 CSS 翻转逻辑，去掉 JS 翻转以避免双重翻转
+            ctx.restore();
+            
+            ctx.drawImage(video, startX, startY, drawW, drawH);
+        }
+
+        // 辅助：校准可视化
+        function visualizeCalibration(imageData) {
+            const data = imageData.data;
+            const pFrame = prevFrame;
+            if (!pFrame) return;
+
+            for (let i = 0; i < data.length; i += 4) {
+                const diff = Math.abs(data[i+1] - pFrame[i+1]);
+                if (diff > 30) {
+                    data[i] = 0; data[i+1] = 255; data[i+2] = 0;
+                } else {
+                    const gray = data[i+1];
+                    data[i] = gray * 0.5; data[i+1] = gray * 0.5; data[i+2] = gray * 0.5;
+                }
+            }
+            motionCtx.putImageData(imageData, 0, 0);
+            
+            displayCtx.save();
+            displayCtx.globalAlpha = 0.8;
+            displayCtx.imageSmoothingEnabled = false; 
+            displayCtx.drawImage(motionCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
+            displayCtx.restore();
+        }
+
+        function calculateMotionScore(data) {
+            let score = 0;
+            if (prevFrame) {
+                // 采样密度：手机 1/4，电脑 1/2
+                const step = isMobile ? 16 : 8; 
+                for (let i = 0; i < data.length; i += step) { 
+                    const diff = Math.abs(data[i+1] - prevFrame[i+1]);
+                    score += diff;
+                }
+            }
+            prevFrame = new Uint8ClampedArray(data);
+            return score;
+        }
+
+        function updateMotionBar(score) {
+            // 显示归一化
+            const baseThreshold = isMobile ? 800 : 3200;
+            const threshold = (120 - sensitivity) * baseThreshold;
+            const percentage = Math.min(100, (score / (threshold * 1.5)) * 100);
+            
+            motionBar.style.height = `${percentage}%`;
+            thresholdLine.style.bottom = `${(100 / 1.5)}%`; 
+            
+            if (percentage > (100 / 1.5)) {
+                motionBar.style.background = '#ff0000'; 
+                if(isCalibrating) meterContainer.style.borderColor = '#f00';
+            } else {
+                motionBar.style.background = 'linear-gradient(to top, #0f0, #ff0)';
+                if(isCalibrating) meterContainer.style.borderColor = '#0f0';
+            }
+        }
+
+        // --- 交互逻辑 ---
+
+        function startCalibration() {
+            isCalibrating = true;
+            calibrationTip.classList.remove('opacity-0');
+            meterContainer.classList.add('calibrating');
+        }
+
+        function endCalibration() {
+            isCalibrating = false;
+            calibrationTip.classList.add('opacity-0');
+            meterContainer.classList.remove('calibrating');
+            meterContainer.style.borderColor = '#555';
+        }
+
+        sensitivityRange.addEventListener('mousedown', startCalibration);
+        sensitivityRange.addEventListener('touchstart', startCalibration);
+        sensitivityRange.addEventListener('mouseup', endCalibration);
+        sensitivityRange.addEventListener('touchend', endCalibration);
+        sensitivityRange.addEventListener('input', (e) => sensitivity = parseInt(e.target.value));
+
+        function startGame() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            video.play().catch(console.error);
+
+            isGameRunning = true;
+            gameState = 'GREEN';
+            startTime = Date.now();
+            
+            startPanel.classList.add('hidden');
+            gameOverPanel.classList.add('hidden');
+            
+            body.className = "state-green text-white";
+            statusIcon.innerHTML = '<i class="fa-solid fa-person-running"></i>';
+            statusIcon.className = "doll-icon text-white transform scale-110";
+            
+            scoreInterval = setInterval(() => {
+                const delta = Date.now() - startTime;
+                const secs = Math.floor(delta / 1000);
+                const ms = Math.floor((delta % 1000) / 10);
+                scoreDisplay.innerText = `${String(secs).padStart(2, '0')}:${String(ms).padStart(2, '0')}`;
+            }, 50);
+
+            speak("绿灯，行动");
+            nextCycle();
+        }
+
+        function goHome() {
+            isGameRunning = false;
+            gameState = 'WAITING';
+            clearInterval(scoreInterval);
+            synth.cancel();
+
+            gameOverPanel.classList.add('hidden');
+            startPanel.classList.remove('hidden');
+            
+            body.className = "bg-gray-900 text-white";
+            statusIcon.innerHTML = '<i class="fa-solid fa-child-reaching"></i>';
+            statusIcon.className = "doll-icon text-green-500";
+            scoreDisplay.innerText = "00:00";
+        }
+
+        function nextCycle() {
+            if (!isGameRunning) return;
+            setGreenLight();
+            const greenTime = 2000 + Math.random() * 3000;
+
+            setTimeout(() => {
+                if (!isGameRunning) return;
+                speak("红灯", () => {
+                    setRedLight();
+                    const redTime = 2000 + Math.random() * 2000;
+                    setTimeout(() => {
+                        if (isGameRunning) nextCycle();
+                    }, redTime);
+                });
+            }, greenTime);
+        }
+
+        function setGreenLight() {
+            gameState = 'GREEN';
+            body.className = "state-green text-white";
+            statusIcon.innerHTML = '<i class="fa-solid fa-person-running"></i>';
+            statusIcon.className = "doll-icon text-white transform scale-110";
+        }
+
+        function setRedLight() {
+            if (!isGameRunning) return; 
+            gameState = 'RED';
+            body.className = "state-red text-white";
+            statusIcon.innerHTML = '<i class="fa-solid fa-child"></i>'; 
+            statusIcon.className = "doll-icon text-black animate-head-turn";
+        }
+
+        function gameOver() {
+            isGameRunning = false;
+            gameState = 'GAMEOVER';
+            clearInterval(scoreInterval);
+            playAlarmSound();
+            speak("淘汰");
+            body.className = "state-dead text-white";
+            gameOverPanel.classList.remove('hidden');
+            finalScore.innerText = scoreDisplay.innerText;
+        }
+
+        function speak(text, callback) {
+            synth.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'zh-CN'; 
+            utterance.rate = 1.3; 
+            if (text.includes("红灯")) {
+                utterance.pitch = 1.4; 
+                utterance.rate = 1.6; 
+            }
+            if (callback) utterance.onend = callback;
+            synth.speak(utterance);
+        }
+
+        function playAlarmSound() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(110, audioCtx.currentTime + 0.5);
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.5);
+        }
+
+        startBtn.addEventListener('click', startGame);
+        restartBtn.addEventListener('click', startGame);
+        homeBtn.addEventListener('click', goHome);
+        
+        init();
+
+    </script>
+</body>
+</html>
