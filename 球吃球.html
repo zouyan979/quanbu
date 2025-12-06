@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Gluttony - 进化版</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050510;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        #gameCanvas { display: block; }
+
+        /* UI 层 */
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+        }
+
+        /* 计分板 */
+        .hud-panel {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 20px;
+            color: white;
+            font-weight: bold;
+            pointer-events: none;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        #score-board { top: 20px; left: 20px; }
+        #rank-board { top: 20px; right: 20px; text-align: right; }
+
+        /* 开始菜单 */
+        #start-screen {
+            position: absolute;
+            inset: 0;
+            background: rgba(5, 5, 16, 0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            z-index: 100;
+        }
+
+        h1 {
+            font-size: 3rem;
+            background: linear-gradient(to right, #00f260, #0575e6);
+            -webkit-background-clip: text;
+            color: transparent;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 5px;
+            text-shadow: 0 0 30px rgba(0, 242, 96, 0.5);
+        }
+
+        input {
+            padding: 15px;
+            font-size: 1.2rem;
+            border-radius: 30px;
+            border: 2px solid #333;
+            background: rgba(255,255,255,0.1);
+            color: white;
+            text-align: center;
+            outline: none;
+            margin-bottom: 20px;
+            width: 250px;
+        }
+
+        .btn-primary {
+            padding: 15px 50px;
+            font-size: 1.5rem;
+            border: none;
+            border-radius: 50px;
+            background: linear-gradient(45deg, #ff0099, #493240);
+            color: white;
+            cursor: pointer;
+            box-shadow: 0 0 20px rgba(255, 0, 153, 0.4);
+            transition: transform 0.1s;
+        }
+        .btn-primary:active { transform: scale(0.95); }
+
+        /* 移动端控件 */
+        #mobile-controls {
+            display: none; /* JS检测开启 */
+            pointer-events: auto;
+        }
+
+        #joystick-zone {
+            position: absolute;
+            bottom: 50px;
+            left: 50px;
+            width: 150px;
+            height: 150px;
+        }
+
+        .action-btn {
+            position: absolute;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.15);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 30px;
+            color: white;
+            touch-action: manipulation;
+        }
+        .action-btn:active { background: rgba(255,255,255,0.3); transform: scale(0.9); }
+
+        #btn-dash { bottom: 40px; right: 40px; border-color: #00ffff; color: #00ffff; } /* 冲刺/加速 */
+        #btn-split { bottom: 140px; right: 40px; border-color: #ff00ff; color: #ff00ff; } /* 分身 */
+
+        /* 游戏结束 */
+        #game-over {
+            display: none;
+            position: absolute;
+            inset: 0;
+            background: rgba(0,0,0,0.8);
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 90;
+            pointer-events: auto;
+        }
+        
+        .menu-btn {
+            margin-top: 15px;
+            padding: 10px 30px;
+            font-size: 1.2rem;
+            border: 2px solid rgba(255,255,255,0.5);
+            background: transparent;
+            color: white;
+            border-radius: 30px;
+            cursor: pointer;
+        }
+        .menu-btn:hover { background: rgba(255,255,255,0.1); }
+
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div id="score-board" class="hud-panel">Mass: <span id="massVal">0</span></div>
+        <div id="rank-board" class="hud-panel">
+            <div style="color:#aaa; font-size:12px; margin-bottom:5px;">LEADERBOARD</div>
+            <div id="rankList"></div>
+        </div>
+        
+        <!-- 移动端控件 -->
+        <div id="mobile-controls">
+            <div id="joystick-zone"></div>
+            <!-- 分身按钮 -->
+            <div id="btn-split" class="action-btn">➗</div>
+            <!-- 加速按钮 -->
+            <div id="btn-dash" class="action-btn">⚡</div>
+        </div>
+    </div>
+
+    <!-- 开始菜单 -->
+    <div id="start-screen">
+        <h1>Neon Gluttony</h1>
+        <p style="color:#888; margin-bottom:20px; font-size:14px;">进化版：分身 | 团战 | 广角</p>
+        <input type="text" id="nickname" placeholder="Enter Nickname" maxlength="10">
+        <button id="playBtn" class="btn-primary">开始游戏</button>
+    </div>
+
+    <!-- 结算菜单 -->
+    <div id="game-over">
+        <h2 style="font-size: 50px; color: #ff3333; margin-bottom: 10px;">GAME OVER</h2>
+        <p style="font-size: 20px; color: white; margin-bottom: 30px;">最终体积: <span id="final-score">0</span></p>
+        <button class="btn-primary" onclick="restartGame()">再来一局</button>
+        <button class="menu-btn" onclick="backToMenu()">返回首页</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+
+    <script>
+        const CONFIG = {
+            worldSize: 5000,
+            baseSpeed: 6, // 基础速度
+            foodCount: 800,
+            virusCount: 40,
+            botCount: 30,
+            startRadius: 30,
+            minSpeed: 1.5, // 最小速度
+            splitSpeed: 15,
+            mergeTime: 600,
+            viewScaleFactor: 0.05
+        };
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+        // --- 游戏状态 ---
+        let gameActive = false;
+        let animationId;
+        
+        let foods = [];
+        let viruses = [];
+        let bots = [];
+        let particles = [];
+        
+        let player = {
+            cells: [],
+            color: '#00ffff',
+            name: 'Player',
+            targetX: 0, 
+            targetY: 0,
+            score: 0
+        };
+
+        let camX = 0, camY = 0, camScale = 1;
+        let mouseX = 0, mouseY = 0;
+        let joystickActive = false, joystickAngle = 0;
+        let isDashing = false;
+
+        // --- 初始化与重置 ---
+        function init() {
+            resize();
+            window.addEventListener('resize', resize);
+            
+            if (isMobile) {
+                document.getElementById('mobile-controls').style.display = 'block';
+                initJoystick();
+                
+                const btnSplit = document.getElementById('btn-split');
+                const btnDash = document.getElementById('btn-dash');
+                
+                btnSplit.addEventListener('touchstart', (e) => { e.preventDefault(); splitPlayer(); });
+                btnDash.addEventListener('touchstart', (e) => { e.preventDefault(); isDashing = true; });
+                btnDash.addEventListener('touchend', (e) => { e.preventDefault(); isDashing = false; });
+            } else {
+                window.addEventListener('mousemove', e => {
+                    mouseX = e.clientX - canvas.width / 2;
+                    mouseY = e.clientY - canvas.height / 2;
+                });
+                window.addEventListener('keydown', e => {
+                    if (e.code === 'Space') splitPlayer();
+                    if (e.code === 'KeyW') isDashing = true;
+                });
+                window.addEventListener('keyup', e => {
+                    if (e.code === 'KeyW') isDashing = false;
+                });
+            }
+        }
+
+        function startGame() {
+            const nameInput = document.getElementById('nickname').value.trim();
+            player.name = nameInput || "Player";
+            
+            foods = [];
+            viruses = [];
+            bots = [];
+            particles = [];
+            
+            for(let i=0; i<CONFIG.foodCount; i++) foods.push(createFood());
+            for(let i=0; i<CONFIG.virusCount; i++) viruses.push(createVirus());
+            for(let i=0; i<CONFIG.botCount; i++) bots.push(createBot());
+
+            player.cells = [{
+                x: CONFIG.worldSize/2, 
+                y: CONFIG.worldSize/2, 
+                r: CONFIG.startRadius, 
+                vx: 0, vy: 0,
+                mergeTimer: 0
+            }];
+            player.score = CONFIG.startRadius;
+
+            document.getElementById('start-screen').style.display = 'none';
+            document.getElementById('game-over').style.display = 'none';
+            document.getElementById('ui-layer').style.display = 'block';
+            
+            gameActive = true;
+            loop();
+        }
+
+        function restartGame() {
+            startGame();
+        }
+
+        function backToMenu() {
+            gameActive = false;
+            cancelAnimationFrame(animationId);
+            document.getElementById('game-over').style.display = 'none';
+            document.getElementById('ui-layer').style.display = 'none';
+            document.getElementById('start-screen').style.display = 'flex';
+        }
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        function initJoystick() {
+            const manager = nipplejs.create({
+                zone: document.getElementById('joystick-zone'),
+                mode: 'static',
+                position: { left: '50%', top: '50%' },
+                color: 'white',
+                size: 100
+            });
+            manager.on('move', (evt, data) => {
+                joystickActive = true;
+                joystickAngle = data.angle.radian;
+            });
+            manager.on('end', () => { joystickActive = false; });
+        }
+
+        // --- 核心逻辑 ---
+
+        function splitPlayer() {
+            for (let i = player.cells.length - 1; i >= 0; i--) {
+                const cell = player.cells[i];
+                if (cell.r < 35) continue;
+                if (player.cells.length >= 16) break;
+
+                const newArea = (Math.PI * cell.r * cell.r) / 2;
+                const newR = Math.sqrt(newArea / Math.PI);
+                cell.r = newR;
+
+                let dirX = 0, dirY = 0;
+                const speed = Math.sqrt(cell.vx * cell.vx + cell.vy * cell.vy);
+                if (speed > 0.1) {
+                    dirX = cell.vx / speed;
+                    dirY = cell.vy / speed;
+                } else {
+                    const dist = Math.sqrt(mouseX*mouseX + mouseY*mouseY) || 1;
+                    dirX = mouseX / dist;
+                    dirY = mouseY / dist;
+                }
+
+                const splitCell = {
+                    x: cell.x + dirX * (cell.r + 5),
+                    y: cell.y + dirY * (cell.r + 5),
+                    r: newR,
+                    vx: dirX * CONFIG.splitSpeed,
+                    vy: dirY * CONFIG.splitSpeed,
+                    mergeTimer: CONFIG.mergeTime + player.cells.length * 60
+                };
+                
+                player.cells.push(splitCell);
+            }
+        }
+
+        function loop() {
+            if (!gameActive) return;
+            update();
+            render();
+            animationId = requestAnimationFrame(loop);
+        }
+
+        function update() {
+            let targetDx = 0, targetDy = 0;
+            if (isMobile && joystickActive) {
+                targetDx = Math.cos(joystickAngle) * 500;
+                targetDy = -Math.sin(joystickAngle) * 500;
+            } else {
+                targetDx = mouseX;
+                targetDy = mouseY;
+            }
+
+            let centerMassX = 0, centerMassY = 0, totalMass = 0;
+            let totalRadius = 0;
+
+            player.cells.forEach(cell => {
+                let speedMult = 1;
+                if (isDashing && cell.r > 20) {
+                    speedMult = 1.5;
+                    cell.r *= 0.998;
+                    createParticles(cell.x, cell.y, player.color, 1);
+                }
+
+                // 速度随体积变慢 (与 Bot 统一公式)
+                const currentSpeed = Math.max(CONFIG.minSpeed, CONFIG.baseSpeed * Math.pow(cell.r, -0.44)) * speedMult;
+                
+                const dist = Math.sqrt(targetDx*targetDx + targetDy*targetDy) || 1;
+                const moveX = (targetDx / dist) * currentSpeed;
+                const moveY = (targetDy / dist) * currentSpeed;
+
+                if (Math.abs(cell.vx) > currentSpeed || Math.abs(cell.vy) > currentSpeed) {
+                    cell.vx *= 0.9;
+                    cell.vy *= 0.9;
+                } else {
+                    cell.vx += (moveX - cell.vx) * 0.1;
+                    cell.vy += (moveY - cell.vy) * 0.1;
+                }
+
+                cell.x += cell.vx;
+                cell.y += cell.vy;
+
+                cell.x = Math.max(cell.r, Math.min(CONFIG.worldSize - cell.r, cell.x));
+                cell.y = Math.max(cell.r, Math.min(CONFIG.worldSize - cell.r, cell.y));
+
+                centerMassX += cell.x * cell.r;
+                centerMassY += cell.y * cell.r;
+                totalMass += cell.r;
+                totalRadius += cell.r;
+
+                if (cell.mergeTimer > 0) cell.mergeTimer--;
+            });
+
+            handleCellCollisions(player.cells);
+
+            if (totalMass > 0) {
+                const targetX = centerMassX / totalMass;
+                const targetY = centerMassY / totalMass;
+                camX += (targetX - camX) * 0.1;
+                camY += (targetY - camY) * 0.1;
+                const optimalScale = 1 / (1 + Math.pow(totalRadius, 0.5) * CONFIG.viewScaleFactor);
+                camScale += (optimalScale - camScale) * 0.05;
+            }
+
+            checkEntityInteractions();
+            bots.forEach(bot => updateBot(bot));
+            updateParticles();
+
+            if (player.cells.length === 0) {
+                gameOver();
+            }
+
+            player.score = Math.floor(totalMass);
+            document.getElementById('massVal').innerText = player.score;
+            updateLeaderboard();
+        }
+
+        function handleCellCollisions(cells) {
+            for (let i = 0; i < cells.length; i++) {
+                for (let j = i + 1; j < cells.length; j++) {
+                    const c1 = cells[i];
+                    const c2 = cells[j];
+                    const dx = c1.x - c2.x;
+                    const dy = c1.y - c2.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    const minDist = c1.r + c2.r;
+
+                    if (dist < minDist) {
+                        if (c1.mergeTimer <= 0 && c2.mergeTimer <= 0) {
+                            if (dist < minDist * 0.5) {
+                                const area1 = Math.PI * c1.r * c1.r;
+                                const area2 = Math.PI * c2.r * c2.r;
+                                c1.r = Math.sqrt((area1 + area2) / Math.PI);
+                                c1.mergeTimer = Math.max(c1.mergeTimer, c2.mergeTimer);
+                                c2.r = 0; 
+                                continue;
+                            }
+                        }
+                        const pen = minDist - dist; 
+                        if (pen > 0) {
+                            const nx = dx / dist;
+                            const ny = dy / dist;
+                            const force = pen * 0.1;
+                            c1.x += nx * force;
+                            c1.y += ny * force;
+                            c2.x -= nx * force;
+                            c2.y -= ny * force;
+                        }
+                    }
+                }
+            }
+            player.cells = player.cells.filter(c => c.r > 0);
+        }
+
+        function checkEntityInteractions() {
+            player.cells.forEach(cell => {
+                for (let i = foods.length - 1; i >= 0; i--) {
+                    if (checkEat(cell, foods[i])) {
+                        gainMass(cell, foods[i].r);
+                        foods.splice(i, 1);
+                        foods.push(createFood());
+                    }
+                }
+                for (let i = viruses.length - 1; i >= 0; i--) {
+                    const v = viruses[i];
+                    if (getDist(cell, v) < cell.r) {
+                        if (cell.r > v.r * 1.15) {
+                            explodeCell(cell);
+                            viruses.splice(i, 1);
+                            viruses.push(createVirus());
+                        }
+                    }
+                }
+                for (let i = bots.length - 1; i >= 0; i--) {
+                    const bot = bots[i];
+                    // Player 吃 Bot
+                    if (cell.r > bot.r * 1.15 && getDist(cell, bot) < cell.r - bot.r * 0.4) {
+                        gainMass(cell, bot.r);
+                        createParticles(bot.x, bot.y, bot.color, 10);
+                        bots.splice(i, 1);
+                        setTimeout(() => bots.push(createBot()), 2000);
+                    } 
+                    // Bot 吃 Player (判定在 updateBot 处理更合理，但为了简单这里双向处理)
+                    else if (bot.r > cell.r * 1.15 && getDist(cell, bot) < bot.r - cell.r * 0.4) {
+                        cell.r = 0;
+                    }
+                }
+            });
+            player.cells = player.cells.filter(c => c.r > 0);
+        }
+
+        function explodeCell(cell) {
+            const pieces = 8;
+            const newArea = (Math.PI * cell.r * cell.r) / pieces;
+            const newR = Math.sqrt(newArea / Math.PI);
+            cell.r = newR; 
+            for (let k = 1; k < pieces; k++) {
+                if (player.cells.length >= 16) break;
+                const angle = Math.random() * Math.PI * 2;
+                const blastSpeed = 10 + Math.random() * 10;
+                player.cells.push({
+                    x: cell.x, y: cell.y,
+                    r: newR,
+                    vx: Math.cos(angle) * blastSpeed,
+                    vy: Math.sin(angle) * blastSpeed,
+                    mergeTimer: CONFIG.mergeTime + 200
+                });
+            }
+            triggerShake(15);
+        }
+
+        function updateBot(bot) {
+            let targetVecX = 0;
+            let targetVecY = 0;
+            let state = 'wander';
+
+            // 1. 扫描威胁 (大玩家细胞 和 刺球)
+            let fleeX = 0, fleeY = 0;
+            let chaseX = 0, chaseY = 0;
+            let foundThreat = false;
+            let foundPrey = false;
+
+            // 检测玩家
+            for (let cell of player.cells) {
+                const d = getDist(bot, cell);
+                if (d < 400) {
+                    if (cell.r > bot.r * 1.15) {
+                        fleeX += bot.x - cell.x;
+                        fleeY += bot.y - cell.y;
+                        foundThreat = true;
+                    } else if (bot.r > cell.r * 1.15) {
+                        chaseX = cell.x;
+                        chaseY = cell.y;
+                        foundPrey = true;
+                    }
+                }
+            }
+
+            // 检测刺球 (如果 Bot 太大，需要躲避刺球)
+            if (bot.r > 45) { // 刺球一般 r=40~60，bot 大于一定程度就要小心
+                for (let v of viruses) {
+                    const d = getDist(bot, v);
+                    if (d < bot.r + 150) { // 警戒范围
+                        if (bot.r > v.r * 1.15) {
+                            // 这是一个威胁！
+                            fleeX += (bot.x - v.x) * 2; // 刺球威胁系数高
+                            fleeY += (bot.y - v.y) * 2;
+                            foundThreat = true;
+                        }
+                    }
+                }
+            }
+
+            // 决策
+            if (foundThreat) {
+                targetVecX = fleeX;
+                targetVecY = fleeY;
+                state = 'flee';
+            } else if (foundPrey) {
+                targetVecX = chaseX - bot.x;
+                targetVecY = chaseY - bot.y;
+                state = 'chase';
+            } else {
+                // 找食物
+                let closeFood = null;
+                let minFoodDist = 200;
+                for (let f of foods) {
+                    const d = getDist(bot, f);
+                    if (d < minFoodDist) {
+                        minFoodDist = d;
+                        closeFood = f;
+                    }
+                }
+                if (closeFood) {
+                    targetVecX = closeFood.x - bot.x;
+                    targetVecY = closeFood.y - bot.y;
+                } else {
+                    // 漫游
+                    bot.timer = (bot.timer || 0) + 1;
+                    if (bot.timer > 40 || !bot.targetVec) {
+                        const angle = Math.random() * Math.PI * 2;
+                        bot.targetVec = { x: Math.cos(angle), y: Math.sin(angle) };
+                        bot.timer = 0;
+                    }
+                    targetVecX = bot.targetVec.x;
+                    targetVecY = bot.targetVec.y;
+                }
+            }
+
+            // 计算速度 (与玩家公式一致)
+            const len = Math.sqrt(targetVecX*targetVecX + targetVecY*targetVecY) || 1;
+            const speed = Math.max(CONFIG.minSpeed, CONFIG.baseSpeed * Math.pow(bot.r, -0.44));
+            
+            bot.x += (targetVecX/len) * speed;
+            bot.y += (targetVecY/len) * speed;
+            
+            // 边界
+            bot.x = Math.max(bot.r, Math.min(CONFIG.worldSize-bot.r, bot.x));
+            bot.y = Math.max(bot.r, Math.min(CONFIG.worldSize-bot.r, bot.y));
+
+            // Bot 与实体交互
+            // 1. 吃食物
+            for (let i = foods.length - 1; i >= 0; i--) {
+                if (checkEat(bot, foods[i])) {
+                    gainMass(bot, foods[i].r);
+                    foods.splice(i, 1);
+                    foods.push(createFood());
+                }
+            }
+            // 2. 撞刺球 (Bot 也会炸)
+            for (let i = viruses.length - 1; i >= 0; i--) {
+                const v = viruses[i];
+                if (getDist(bot, v) < bot.r) {
+                    if (bot.r > v.r * 1.15) {
+                        // Bot 爆炸 (简化处理：变小，喷食物)
+                        bot.r /= 2; // 损失一半质量
+                        viruses.splice(i, 1);
+                        viruses.push(createVirus());
+                        // 喷射食物碎片
+                        for(let k=0; k<5; k++) {
+                            foods.push({
+                                x: bot.x + (Math.random()-0.5)*50,
+                                y: bot.y + (Math.random()-0.5)*50,
+                                r: 5 + Math.random()*5,
+                                color: bot.color
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- 辅助函数 ---
+        function createFood() {
+            return {
+                x: Math.random() * CONFIG.worldSize,
+                y: Math.random() * CONFIG.worldSize,
+                r: 5 + Math.random() * 3,
+                color: `hsl(${Math.random() * 360}, 100%, 60%)`
+            };
+        }
+        function createVirus() {
+            return {
+                x: Math.random() * CONFIG.worldSize,
+                y: Math.random() * CONFIG.worldSize,
+                r: 40 + Math.random() * 20,
+                spikes: 15
+            };
+        }
+        function createBot() {
+            const names = ["Bot", "AI", "Killer", "Noob", "Pro", "Gamer", "Hunter", "Titan"];
+            return {
+                x: Math.random() * CONFIG.worldSize,
+                y: Math.random() * CONFIG.worldSize,
+                r: 20 + Math.random() * 20,
+                color: `hsl(${Math.random() * 360}, 70%, 50%)`,
+                name: names[Math.floor(Math.random()*names.length)]
+            };
+        }
+        function getDist(a, b) { return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2); }
+        function checkEat(e1, e2) { return getDist(e1, e2) < e1.r; } 
+        function gainMass(entity, rGain) {
+            const area = Math.PI * entity.r * entity.r + Math.PI * rGain * rGain;
+            entity.r = Math.sqrt(area / Math.PI);
+        }
+        function triggerShake(amount) {
+            camX += (Math.random()-0.5)*amount;
+            camY += (Math.random()-0.5)*amount;
+        }
+        function createParticles(x, y, color, count) {
+            for(let i=0; i<count; i++) {
+                particles.push({x, y, vx:(Math.random()-0.5)*10, vy:(Math.random()-0.5)*10, life:1, color});
+            }
+        }
+        function updateParticles() {
+            for(let i=particles.length-1; i>=0; i--) {
+                const p = particles[i]; p.x+=p.vx; p.y+=p.vy; p.life-=0.05;
+                if(p.life<=0) particles.splice(i,1);
+            }
+        }
+        function gameOver() {
+            gameActive = false;
+            document.getElementById('ui-layer').style.display = 'none';
+            document.getElementById('game-over').style.display = 'flex';
+            document.getElementById('final-score').innerText = Math.floor(player.score);
+        }
+        function updateLeaderboard() {
+            let playerTotal = 0;
+            player.cells.forEach(c => playerTotal += c.r);
+            let list = bots.map(b => ({name: b.name, r: b.r, isPlayer: false}));
+            if (player.cells.length > 0) list.push({name: player.name, r: playerTotal, isPlayer: true});
+            list.sort((a,b) => b.r - a.r);
+            const html = list.slice(0, 5).map((p, i) => 
+                `<div style="color:${p.isPlayer ? '#00ffff' : 'white'}">
+                    ${i+1}. ${p.name} (${Math.floor(p.r)})
+                </div>`
+            ).join('');
+            document.getElementById('rankList').innerHTML = html;
+        }
+
+        // --- 渲染 ---
+        function render() {
+            ctx.fillStyle = '#050510';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            ctx.translate(canvas.width/2, canvas.height/2);
+            ctx.scale(camScale, camScale);
+            ctx.translate(-camX, -camY);
+
+            const viewW = canvas.width / camScale;
+            const viewH = canvas.height / camScale;
+            const viewLeft = camX - viewW/2 - 100;
+            const viewRight = camX + viewW/2 + 100;
+            const viewTop = camY - viewH/2 - 100;
+            const viewBottom = camY + viewH/2 + 100;
+
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 2;
+            const gridSize = 100;
+            const startGridX = Math.floor(Math.max(0, viewLeft) / gridSize) * gridSize;
+            const endGridX = Math.min(CONFIG.worldSize, viewRight);
+            const startGridY = Math.floor(Math.max(0, viewTop) / gridSize) * gridSize;
+            const endGridY = Math.min(CONFIG.worldSize, viewBottom);
+
+            ctx.beginPath();
+            for(let x=startGridX; x<=endGridX; x+=gridSize) { ctx.moveTo(x, Math.max(0, viewTop)); ctx.lineTo(x, Math.min(CONFIG.worldSize, viewBottom)); }
+            for(let y=startGridY; y<=endGridY; y+=gridSize) { ctx.moveTo(Math.max(0, viewLeft), y); ctx.lineTo(Math.min(CONFIG.worldSize, viewRight), y); }
+            ctx.stroke();
+
+            ctx.strokeStyle = '#300';
+            ctx.lineWidth = 20;
+            ctx.strokeRect(0,0,CONFIG.worldSize,CONFIG.worldSize);
+
+            for(let f of foods) {
+                if (f.x < viewLeft || f.x > viewRight || f.y < viewTop || f.y > viewBottom) continue;
+                ctx.fillStyle = f.color;
+                ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI*2); ctx.fill();
+            }
+
+            for(let v of viruses) {
+                if (v.x < viewLeft || v.x > viewRight || v.y < viewTop || v.y > viewBottom) continue;
+                ctx.fillStyle = '#33ff33';
+                ctx.beginPath();
+                for(let i=0; i<v.spikes*2; i++) {
+                    const a = (Math.PI*2*i)/(v.spikes*2);
+                    const r = i%2===0 ? v.r : v.r*0.9;
+                    ctx.lineTo(v.x+Math.cos(a)*r, v.y+Math.sin(a)*r);
+                }
+                ctx.fill();
+                ctx.strokeStyle = '#228822'; ctx.lineWidth=3; ctx.stroke();
+            }
+
+            const allEntities = bots.map(b => ({...b, type:'bot'})).concat(player.cells.map(c => ({...c, type:'player', name:player.name, color:player.color})));
+            allEntities.sort((a,b) => a.r - b.r);
+
+            for(let p of allEntities) {
+                if (p.x+p.r < viewLeft || p.x-p.r > viewRight || p.y+p.r < viewTop || p.y-p.r > viewBottom) continue;
+                drawCell(p.x, p.y, p.r, p.color, p.name);
+            }
+
+            for(let p of particles) {
+                ctx.globalAlpha = p.life; ctx.fillStyle = p.color;
+                ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+
+            ctx.restore();
+        }
+
+        function drawCell(x, y, r, color, name) {
+            ctx.fillStyle = color;
+            ctx.shadowBlur = 15; ctx.shadowColor = color;
+            ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+            ctx.shadowBlur = 0;
+            if (r > 15) {
+                ctx.fillStyle = 'white';
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.font = `bold ${r/2.5}px Arial`;
+                ctx.fillText(name, x, y);
+            }
+        }
+
+        document.getElementById('playBtn').addEventListener('click', startGame);
+        
+        init();
+
+    </script>
+</body>
+</html>
