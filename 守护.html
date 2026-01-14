@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>每日安全签到 - 本地化版</title>
+    <title>每日安全签到 - 紧急修复版</title>
     
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -46,7 +46,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        const STORAGE_KEY = 'daily_safety_checkin_cn_v1';
+        const STORAGE_KEY = 'daily_safety_checkin_cn_v2_fix'; // 升级存储Key以重置坏状态
         const WARM_QUOTES = [
             "平安是福，点亮心灯。", "今日无事，便是好时节。", 
             "即使独行，也有星光。", "好好生活，慢慢相遇。",
@@ -54,14 +54,11 @@
         ];
 
         // --- 坐标转换算法 (WGS84 -> GCJ02) ---
-        // 浏览器的GPS是WGS84，高德地图是GCJ02，必须转换否则偏差巨大
         const wgs84ToGcj02 = (lat, lng) => {
             const x_pi = 3.14159265358979324 * 3000.0 / 180.0;
             const a = 6378245.0;
             const ee = 0.00669342162296594323;
-
             if (outOfChina(lat, lng)) return { lat, lng };
-
             let dLat = transformLat(lng - 105.0, lat - 35.0);
             let dLng = transformLng(lng - 105.0, lat - 35.0);
             const radLat = lat / 180.0 * Math.PI;
@@ -72,7 +69,6 @@
             dLng = (dLng * 180.0) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
             return { lat: lat + dLat, lng: lng + dLng };
         };
-
         const transformLat = (x, y) => {
             let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
             ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
@@ -80,7 +76,6 @@
             ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
             return ret;
         };
-
         const transformLng = (x, y) => {
             let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
             ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
@@ -88,14 +83,11 @@
             ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
             return ret;
         };
-
         const outOfChina = (lat, lng) => {
             if (lng < 72.004 || lng > 137.8347) return true;
             if (lat < 0.8293 || lat > 55.8271) return true;
             return false;
         };
-
-        // --- UI 组件 ---
 
         const TabBar = ({ currentTab, onTabChange }) => (
             <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-3 flex justify-between items-center z-50 pb-safe shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
@@ -120,14 +112,15 @@
             const [history, setHistory] = useState({}); 
             const [contacts, setContacts] = useState([]);
             const [deadlineTime, setDeadlineTime] = useState('');
+            const [triggeredDate, setTriggeredDate] = useState(''); // 新增：记录当天是否已触发过报警
             
             // 配置
-            const [emailMode, setEmailMode] = useState('manual'); // 'manual' (mailto) or 'auto' (emailjs)
+            const [emailMode, setEmailMode] = useState('manual');
             const [emailConfig, setEmailConfig] = useState({ serviceId: '', templateId: '', publicKey: '' });
 
             // 状态
-            const [userLocation, setUserLocation] = useState(null); // WGS84
-            const [gcjLocation, setGcjLocation] = useState(null);   // GCJ02 (高德)
+            const [userLocation, setUserLocation] = useState(null);
+            const [gcjLocation, setGcjLocation] = useState(null);
             const [locError, setLocError] = useState('');
             const [feedbackMsg, setFeedbackMsg] = useState('');
             const [statusLevel, setStatusLevel] = useState('safe');
@@ -156,6 +149,8 @@
                         setDeadlineTime(parsed.deadlineTime || '');
                         setUserName(parsed.userName || '');
                         setEmailMode(parsed.emailMode || 'manual');
+                        setTriggeredDate(parsed.triggeredDate || ''); // 加载触发记录
+                        
                         if (parsed.emailConfig) {
                             setEmailConfig(parsed.emailConfig);
                             setTempEmailConfig(parsed.emailConfig);
@@ -172,16 +167,26 @@
             useEffect(() => {
                 if (!mounted) return;
                 localStorage.setItem(STORAGE_KEY, JSON.stringify({ 
-                    lastCheckIn, streak, history, contacts, deadlineTime, userName, emailConfig, emailMode
+                    lastCheckIn, streak, history, contacts, deadlineTime, userName, emailConfig, emailMode, triggeredDate
                 }));
-            }, [lastCheckIn, streak, history, contacts, deadlineTime, userName, emailConfig, emailMode, mounted]);
+            }, [lastCheckIn, streak, history, contacts, deadlineTime, userName, emailConfig, emailMode, triggeredDate, mounted]);
 
-            // --- 监控 (每10秒) ---
+            // --- 监控 (核心修复) ---
             useEffect(() => {
                 if (!mounted) return;
                 const timer = setInterval(() => {
                     const now = new Date();
+                    const todayStr = now.toISOString().split('T')[0];
+
+                    // 1. 优先检查：如果今天已经触发过报警，强制保持 triggered 状态，绝不重复触发
+                    if (triggeredDate === todayStr) {
+                        if (statusLevel !== 'triggered') {
+                            setStatusLevel('triggered'); 
+                        }
+                        return; // 直接返回，跳过后续所有逻辑，防止死循环
+                    }
                     
+                    // 2. 常规状态检查
                     if (lastCheckIn) {
                         const hours = (now.getTime() - lastCheckIn) / 3600000;
                         if (hours < 24) setStatusLevel('safe');
@@ -189,13 +194,17 @@
                         else setStatusLevel('danger');
                     }
                     
+                    // 3. 截止时间检查
                     if (deadlineTime && !isTodayChecked()) {
                         const [h, m] = deadlineTime.split(':').map(Number);
                         const deadline = new Date();
                         deadline.setHours(h, m, 0, 0);
                         
+                        // 触发窗口：超过截止时间且在5分钟内
                         if (now > deadline && (now - deadline) < 300000) {
-                            if (!isAutoSending && statusLevel !== 'triggered') {
+                            if (!isAutoSending && triggeredDate !== todayStr) {
+                                console.log("Triggering alarm...");
+                                setTriggeredDate(todayStr); // 立即上锁
                                 setStatusLevel('triggered');
                                 handleEmergencyTrigger("超时未签到自动触发");
                             }
@@ -203,7 +212,7 @@
                     }
                 }, 10000);
                 return () => clearInterval(timer);
-            }, [lastCheckIn, deadlineTime, isAutoSending, statusLevel, mounted]);
+            }, [lastCheckIn, deadlineTime, isAutoSending, statusLevel, triggeredDate, mounted]);
 
             // --- 核心功能 ---
 
@@ -220,7 +229,6 @@
                             const lat = pos.coords.latitude;
                             const lng = pos.coords.longitude;
                             setUserLocation({ lat, lng });
-                            // 转换为高德坐标
                             const gcj = wgs84ToGcj02(lat, lng);
                             setGcjLocation(gcj);
                             resolve({ wgs: {lat, lng}, gcj });
@@ -238,14 +246,18 @@
             };
 
             const connectBluetooth = async () => {
+                if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+                     alert("❌ 蓝牙功能只能在 HTTPS 安全协议下使用。");
+                     return;
+                }
                 if (!navigator.bluetooth) {
-                    alert("您的浏览器不支持 Web Bluetooth API (请使用 Chrome/Edge)");
+                    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+                    if (isIOS) alert("❌ iOS系统不支持网页蓝牙，请使用安卓或电脑。");
+                    else alert("❌ 您的浏览器不支持 Web Bluetooth API。");
                     return;
                 }
                 try {
-                    const device = await navigator.bluetooth.requestDevice({
-                        filters: [{ services: ['heart_rate'] }]
-                    });
+                    const device = await navigator.bluetooth.requestDevice({ filters: [{ services: ['heart_rate'] }] });
                     const server = await device.gatt.connect();
                     const service = await server.getPrimaryService('heart_rate');
                     const characteristic = await service.getCharacteristic('heart_rate_measurement');
@@ -263,18 +275,13 @@
                 }
             };
 
-            // 构造地图链接
             const getMapLink = (loc) => {
                 if (!loc) return "位置信息不可用";
-                // 使用高德地图URI Scheme，在手机上可以直接唤起APP，在电脑打开网页
-                // 高德坐标系: GCJ02
                 return `https://uri.amap.com/marker?position=${loc.lng},${loc.lat}&name=用户当前位置&callnative=1`;
             };
 
-            // 发送 - EmailJS 模式
             const sendViaEmailJS = async (reason, targetEmail, targetName, locData) => {
                 if (!window.emailjs || !emailConfig.serviceId) return { success: false, msg: "EmailJS未配置" };
-                
                 const mapLink = getMapLink(locData);
                 const templateParams = {
                     to_name: targetName,
@@ -287,7 +294,6 @@
                     last_active: lastCheckIn ? new Date(lastCheckIn).toLocaleString() : '无记录',
                     send_time: new Date().toLocaleString()
                 };
-
                 try {
                     await emailjs.send(emailConfig.serviceId, emailConfig.templateId, templateParams);
                     return { success: true, msg: "EmailJS发送成功" };
@@ -297,48 +303,50 @@
                 }
             };
 
-            // 发送 - 手动 Mailto 模式 (完全免费/国内直连)
             const sendViaMailto = (reason, contacts, locData) => {
                 if (!contacts || contacts.length === 0) return { success: false, msg: "无联系人" };
-                
                 const emails = contacts.map(c => c.email).join(',');
                 const mapLink = getMapLink(locData);
                 const subject = `【紧急】${userName || '用户'} ${reason}`;
                 const body = `状态：${reason}\n时间：${new Date().toLocaleString()}\n心率：${heartRate ? heartRate + ' BPM' : '无数据'}\n\n📍高德地图定位：\n${mapLink}\n\n请尽快确认安全！`;
-                
-                // 唤起邮件APP
                 window.location.href = `mailto:${emails}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-                return { success: true, msg: "已唤起邮件APP，请点击发送" };
+                return { success: true, msg: "已唤起邮件APP" };
             };
 
             const handleEmergencyTrigger = async (reason) => {
                 if (contacts.length === 0) {
                     alert("⚠️ 请先在【配置】页添加联系人！");
+                    setTriggeredDate(''); // 没联系人就重置锁，允许下次尝试
                     return;
                 }
                 
                 setIsAutoSending(true);
                 const res = await handleGetLocation();
-                const locToUse = res ? res.gcj : (gcjLocation || null); // 优先使用最新，否则用缓存
+                const locToUse = res ? res.gcj : (gcjLocation || null);
                 
                 let logs = [];
 
                 if (emailMode === 'auto') {
-                    // 自动模式：循环发送
                     for (const contact of contacts) {
                         const r = await sendViaEmailJS(reason, contact.email, contact.name, locToUse);
                         logs.push(`${contact.name}: ${r.msg}`);
                     }
                     alert(`🚨 自动报警结束\n\n${logs.join('\n')}`);
                 } else {
-                    // 手动模式：唤起一次
                     const r = sendViaMailto(reason, contacts, locToUse);
                     logs.push(r.msg);
-                    // 手动模式不需要alert太多，因为mailto本身会跳出页面
                 }
                 
                 setSendLogs(logs);
                 setIsAutoSending(false);
+            };
+
+            // 紧急停止报警
+            const handleStopAlarm = () => {
+                setTriggeredDate(''); // 清除触发记录
+                setStatusLevel('safe'); // 重置状态
+                setIsAutoSending(false);
+                alert("✅ 报警已手动解除。系统将在下次超时时再次触发。");
             };
 
             const handleTest = async () => {
@@ -346,11 +354,8 @@
                     alert("⚠️ 请先输入或添加一个联系人邮箱。");
                     return;
                 }
-                
                 const email = newContactEmail || contacts[0].email;
                 const name = newContactName || contacts[0].name || "测试者";
-                
-                // 强制获取一次定位用于测试
                 const res = await handleGetLocation();
                 const locToUse = res ? res.gcj : (gcjLocation || null);
 
@@ -359,12 +364,11 @@
                         alert("⚠️ 自动模式下，请先填写EmailJS配置。");
                         return;
                     }
-                    setEmailConfig(tempEmailConfig); // 保存配置
+                    setEmailConfig(tempEmailConfig);
                     alert("正在尝试通过 EmailJS 发送...");
                     const r = await sendViaEmailJS("手动测试邮件", email, name, locToUse);
-                    alert(r.success ? "✅ 发送成功！请检查收件箱/垃圾箱。" : `❌ 失败: ${r.msg}`);
+                    alert(r.success ? "✅ 发送成功！" : `❌ 失败: ${r.msg}`);
                 } else {
-                    // 手动模式测试
                     sendViaMailto("手动测试邮件", [{email, name}], locToUse);
                 }
             };
@@ -382,6 +386,9 @@
                 setLastCheckIn(Date.now());
                 setHistory(newHistory);
                 setFeedbackMsg(WARM_QUOTES[Math.floor(Math.random() * WARM_QUOTES.length)]);
+                
+                // 签到后重置所有报警状态
+                setTriggeredDate('');
                 setStatusLevel('safe');
                 setSendLogs([]);
             };
@@ -430,12 +437,20 @@
                             <>
                                 {statusLevel === 'triggered' && (
                                     <div className="bg-red-100 border-l-4 border-red-500 p-4 rounded-r">
-                                        <h3 className="text-red-800 font-bold flex items-center gap-2">
-                                            {isAutoSending ? <div className="spinner"></div> : <i className="fas fa-exclamation-triangle"></i>}
-                                            {isAutoSending ? '正在报警...' : '已触发报警'}
-                                        </h3>
-                                        <div className="text-red-700 text-xs mt-2">
-                                            {emailMode === 'manual' ? '请在弹出的邮件APP中点击发送！' : '系统正在后台尝试联系...'}
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <h3 className="text-red-800 font-bold flex items-center gap-2">
+                                                    {isAutoSending ? <div className="spinner"></div> : <i className="fas fa-exclamation-triangle"></i>}
+                                                    {isAutoSending ? '正在报警...' : '已触发报警'}
+                                                </h3>
+                                                <div className="text-red-700 text-xs mt-2">
+                                                    已记录今日触发，不会重复发送。
+                                                </div>
+                                            </div>
+                                            {/* 紧急停止按钮 */}
+                                            <button onClick={handleStopAlarm} className="px-3 py-1 bg-red-200 text-red-800 text-xs rounded border border-red-300">
+                                                停止/重置
+                                            </button>
                                         </div>
                                     </div>
                                 )}
@@ -498,7 +513,7 @@
                                         </button>
                                     </div>
 
-                                    {/* EmailJS 配置区 (仅在自动模式显示) */}
+                                    {/* EmailJS 配置区 */}
                                     {emailMode === 'auto' && (
                                         <div className="bg-orange-50 p-4 rounded-lg border border-orange-100 animate-fade-in">
                                             <p className="text-[10px] text-orange-800 mb-2 font-bold">EmailJS 配置 (每月200封免费):</p>
