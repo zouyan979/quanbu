@@ -3,8 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>每日安全签到 - 紧急修复版</title>
+    <title>每日安全签到 - 终极守护版</title>
     
+    <!-- PWA Manifest -->
+    <link rel="manifest" href='data:application/manifest+json;base64,eyJuYW1lIjoi5q+P5pel5a6J5YWo562+5YiwIiwic2hvcnRfbmFtZSI6IuWujV9u562+5YiwIiwic3RhcnRfdXJsIjoiLiIsImRpc3BsYXkiOiJzdGFuZGFxvbmUiLCJiYWNrZ3JvdW5kX2NvbG9yIjoiI2YzZjRmNiIsInRoZW1lX2NvbG9yIjoiI2YzZjRmNiIsImljb25zIjpbeyJzcmMiOiJodHRwczovL2ltZy5pY29uczhjb20vY29sb3IvMTQ0LzAwMDAwMC9zaGllbGQucG5nIiwic2l6ZXMiOiIxNDR4MTQ0IiwidHlwZSI6ImltYWdlL3BuZyJ9XX0='>
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="https://img.icons8.com/color/144/000000/shield.png">
+
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -21,6 +27,7 @@
             background-color: #f3f4f6;
             overscroll-behavior-y: none;
             -webkit-tap-highlight-color: transparent;
+            user-select: none;
         }
         .animate-fade-in { animation: fadeIn 0.3s ease-out; }
         .glass-card {
@@ -37,7 +44,31 @@
             border-left-color: #000;
             animation: spin 1s linear infinite;
         }
+        /* 红色警报闪烁 (柔和) */
+        @keyframes alarmFlash {
+            0%, 100% { background-color: #fee2e2; }
+            50% { background-color: #ef4444; }
+        }
+        .alarm-active {
+            animation: alarmFlash 1s infinite;
+        }
+        /* 剧烈频闪 (SOS) */
+        @keyframes strobe {
+            0% { background-color: #ff0000; }
+            50% { background-color: #ffffff; }
+            100% { background-color: #ff0000; }
+        }
+        .strobe-active {
+            animation: strobe 0.2s infinite;
+        }
+        /* 模态框动画 */
+        .modal-enter { animation: modalIn 0.2s ease-out forwards; }
+        @keyframes modalIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
@@ -46,18 +77,89 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        const STORAGE_KEY = 'daily_safety_checkin_cn_v2_fix'; // 升级存储Key以重置坏状态
+        const STORAGE_KEY = 'daily_safety_checkin_v3_final';
+        
+        // 语录库
         const WARM_QUOTES = [
             "平安是福，点亮心灯。", "今日无事，便是好时节。", 
             "即使独行，也有星光。", "好好生活，慢慢相遇。",
             "世界很大，有人在等你。", "每一个日子都值得起舞。"
         ];
 
-        // --- 坐标转换算法 (WGS84 -> GCJ02) ---
+        // 心情选项
+        const MOODS = [
+            { id: 'happy', icon: '😄', label: '开心' },
+            { id: 'normal', icon: '🙂', label: '平淡' },
+            { id: 'sad', icon: '😔', label: '难过' },
+            { id: 'sick', icon: '🤒', label: '不适' }
+        ];
+
+        // --- 辅助函数 ---
+        
+        const speak = (text) => {
+            if ('speechSynthesis' in window) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'zh-CN';
+                window.speechSynthesis.speak(utterance);
+            }
+        };
+
+        const playAlarmSound = () => {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(880, ctx.currentTime);
+                osc.frequency.linearRampToValueAtTime(440, ctx.currentTime + 0.5);
+                gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.5);
+            } catch(e) { console.error("Audio error", e); }
+        };
+
+        // 尝试控制闪光灯 (仅支持部分Android Chrome/Edge)
+        const toggleTorch = async (enable) => {
+            if (!('mediaDevices' in navigator)) return;
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const cameras = devices.filter(device => device.kind === 'videoinput');
+                if (cameras.length === 0) return;
+
+                // 停止所有现有的轨道
+                // 注意：这只是一个简单的尝试，实际中可能需要维护track引用
+                
+                if (enable) {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'environment' }
+                    });
+                    const track = stream.getVideoTracks()[0];
+                    if (track) {
+                        // 尝试开启闪光灯
+                        const capabilities = track.getCapabilities();
+                        if (capabilities.torch) {
+                            await track.applyConstraints({ advanced: [{ torch: true }] });
+                            window._torchTrack = track; // 暂存引用以便关闭
+                        } else {
+                            // 不支持闪光灯，停止占用摄像头
+                            track.stop();
+                        }
+                    }
+                } else {
+                    if (window._torchTrack) {
+                        window._torchTrack.stop();
+                        window._torchTrack = null;
+                    }
+                }
+            } catch (e) {
+                console.log("Torch control failed (expected on iOS):", e);
+            }
+        };
+
         const wgs84ToGcj02 = (lat, lng) => {
-            const x_pi = 3.14159265358979324 * 3000.0 / 180.0;
-            const a = 6378245.0;
-            const ee = 0.00669342162296594323;
             if (outOfChina(lat, lng)) return { lat, lng };
             let dLat = transformLat(lng - 105.0, lat - 35.0);
             let dLng = transformLng(lng - 105.0, lat - 35.0);
@@ -69,26 +171,12 @@
             dLng = (dLng * 180.0) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
             return { lat: lat + dLat, lng: lng + dLng };
         };
-        const transformLat = (x, y) => {
-            let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
-            ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-            ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
-            ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
-            return ret;
-        };
-        const transformLng = (x, y) => {
-            let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-            ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-            ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
-            ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
-            return ret;
-        };
-        const outOfChina = (lat, lng) => {
-            if (lng < 72.004 || lng > 137.8347) return true;
-            if (lat < 0.8293 || lat > 55.8271) return true;
-            return false;
-        };
+        const a = 6378245.0, ee = 0.00669342162296594323;
+        const transformLat = (x, y) => -100.0 + 2.0*x + 3.0*y + 0.2*y*y + 0.1*x*y + 0.2*Math.sqrt(Math.abs(x)) + (20.0*Math.sin(6.0*x*Math.PI) + 20.0*Math.sin(2.0*x*Math.PI))*2.0/3.0 + (20.0*Math.sin(y*Math.PI) + 40.0*Math.sin(y/3.0*Math.PI))*2.0/3.0 + (160.0*Math.sin(y/12.0*Math.PI) + 320*Math.sin(y*Math.PI/30.0))*2.0/3.0;
+        const transformLng = (x, y) => 300.0 + x + 2.0*y + 0.1*x*x + 0.1*x*y + 0.1*Math.sqrt(Math.abs(x)) + (20.0*Math.sin(6.0*x*Math.PI) + 20.0*Math.sin(2.0*x*Math.PI))*2.0/3.0 + (20.0*Math.sin(x*Math.PI) + 40.0*Math.sin(x/3.0*Math.PI))*2.0/3.0 + (150.0*Math.sin(x/12.0*Math.PI) + 300.0*Math.sin(x/30.0*Math.PI))*2.0/3.0;
+        const outOfChina = (lat, lng) => (lng < 72.004 || lng > 137.8347 || lat < 0.8293 || lat > 55.8271);
 
+        // --- UI 组件 ---
         const TabBar = ({ currentTab, onTabChange }) => (
             <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-3 flex justify-between items-center z-50 pb-safe shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
                 <button onClick={() => onTabChange('home')} className={`flex flex-col items-center gap-1 transition-colors ${currentTab === 'home' ? 'text-amber-500' : 'text-gray-400'}`}>
@@ -105,38 +193,52 @@
             const [currentTab, setCurrentTab] = useState('home');
             const [mounted, setMounted] = useState(false);
             
-            // 数据
+            // --- 数据 State ---
             const [userName, setUserName] = useState('');
             const [lastCheckIn, setLastCheckIn] = useState(null);
             const [streak, setStreak] = useState(0);
             const [history, setHistory] = useState({}); 
             const [contacts, setContacts] = useState([]);
             const [deadlineTime, setDeadlineTime] = useState('');
-            const [triggeredDate, setTriggeredDate] = useState(''); // 新增：记录当天是否已触发过报警
+            const [triggeredDate, setTriggeredDate] = useState(''); 
             
-            // 配置
+            // 新增功能 State
+            const [medicalInfo, setMedicalInfo] = useState('');
+            const [vacationEnd, setVacationEnd] = useState('');
+            const [moodHistory, setMoodHistory] = useState({});
+            const [preAlarmDuration, setPreAlarmDuration] = useState(5); // 默认5分钟缓冲
+
             const [emailMode, setEmailMode] = useState('manual');
             const [emailConfig, setEmailConfig] = useState({ serviceId: '', templateId: '', publicKey: '' });
 
-            // 状态
+            // 运行时 State
             const [userLocation, setUserLocation] = useState(null);
             const [gcjLocation, setGcjLocation] = useState(null);
-            const [locError, setLocError] = useState('');
-            const [feedbackMsg, setFeedbackMsg] = useState('');
-            const [statusLevel, setStatusLevel] = useState('safe');
+            const [statusLevel, setStatusLevel] = useState('safe'); 
             const [isAutoSending, setIsAutoSending] = useState(false);
             const [sendLogs, setSendLogs] = useState([]); 
+            const [preAlarmEndTime, setPreAlarmEndTime] = useState(0);
+            const [feedbackMsg, setFeedbackMsg] = useState('');
+            
+            // 手动 SOS 倒计时状态
+            const [manualSosCountdown, setManualSosCountdown] = useState(null);
 
             // 蓝牙
             const [heartRate, setHeartRate] = useState(null);
             const [isBtConnected, setIsBtConnected] = useState(false);
 
-            // 表单
+            // 临时表单
             const [newContactName, setNewContactName] = useState('');
             const [newContactEmail, setNewContactEmail] = useState('');
             const [tempEmailConfig, setTempEmailConfig] = useState({...emailConfig});
+            const [selectedMood, setSelectedMood] = useState('normal');
 
-            // --- 初始化 ---
+            // 模态框 State
+            const [modalType, setModalType] = useState('none'); 
+            const [configText, setConfigText] = useState('');
+            const [copyStatus, setCopyStatus] = useState('');
+
+            // --- 启动逻辑 ---
             useEffect(() => {
                 const savedData = localStorage.getItem(STORAGE_KEY);
                 if (savedData) {
@@ -149,7 +251,11 @@
                         setDeadlineTime(parsed.deadlineTime || '');
                         setUserName(parsed.userName || '');
                         setEmailMode(parsed.emailMode || 'manual');
-                        setTriggeredDate(parsed.triggeredDate || ''); // 加载触发记录
+                        setTriggeredDate(parsed.triggeredDate || '');
+                        setMedicalInfo(parsed.medicalInfo || '');
+                        setVacationEnd(parsed.vacationEnd || '');
+                        setMoodHistory(parsed.moodHistory || {});
+                        setPreAlarmDuration(parsed.preAlarmDuration || 5);
                         
                         if (parsed.emailConfig) {
                             setEmailConfig(parsed.emailConfig);
@@ -158,8 +264,14 @@
                                 emailjs.init(parsed.emailConfig.publicKey);
                             }
                         }
-                    } catch(e) { console.error("Load error", e); }
+                    } catch(e) { console.error(e); }
                 }
+
+                const params = new URLSearchParams(window.location.search);
+                if (params.get('action') === 'checkin') {
+                    setTimeout(() => handleCheckIn('normal', true), 500);
+                }
+
                 setMounted(true);
             }, []);
 
@@ -167,248 +279,262 @@
             useEffect(() => {
                 if (!mounted) return;
                 localStorage.setItem(STORAGE_KEY, JSON.stringify({ 
-                    lastCheckIn, streak, history, contacts, deadlineTime, userName, emailConfig, emailMode, triggeredDate
+                    lastCheckIn, streak, history, contacts, deadlineTime, 
+                    userName, emailConfig, emailMode, triggeredDate, 
+                    medicalInfo, vacationEnd, moodHistory, preAlarmDuration
                 }));
-            }, [lastCheckIn, streak, history, contacts, deadlineTime, userName, emailConfig, emailMode, triggeredDate, mounted]);
+            }, [lastCheckIn, streak, history, contacts, deadlineTime, userName, emailConfig, emailMode, triggeredDate, medicalInfo, vacationEnd, moodHistory, preAlarmDuration, mounted]);
 
-            // --- 监控 (核心修复) ---
+            // --- 自动监控 (每3秒) ---
             useEffect(() => {
                 if (!mounted) return;
                 const timer = setInterval(() => {
                     const now = new Date();
                     const todayStr = now.toISOString().split('T')[0];
 
-                    // 1. 优先检查：如果今天已经触发过报警，强制保持 triggered 状态，绝不重复触发
+                    if (vacationEnd && todayStr <= vacationEnd) {
+                        if (statusLevel !== 'vacation') setStatusLevel('vacation');
+                        return;
+                    }
+
                     if (triggeredDate === todayStr) {
-                        if (statusLevel !== 'triggered') {
-                            setStatusLevel('triggered'); 
+                        if (statusLevel !== 'triggered') setStatusLevel('triggered'); 
+                        return;
+                    }
+
+                    if (statusLevel === 'pre_alarm') {
+                        playAlarmSound();
+                        if (Date.now() > preAlarmEndTime) {
+                            setTriggeredDate(todayStr);
+                            setStatusLevel('triggered');
+                            handleEmergencyTrigger("超时未签到 - 自动触发");
+                            speak("紧急求助已发送");
                         }
-                        return; // 直接返回，跳过后续所有逻辑，防止死循环
+                        return;
                     }
                     
-                    // 2. 常规状态检查
-                    if (lastCheckIn) {
-                        const hours = (now.getTime() - lastCheckIn) / 3600000;
-                        if (hours < 24) setStatusLevel('safe');
-                        else if (hours >= 24 && hours < 48) setStatusLevel('warning');
-                        else setStatusLevel('danger');
-                    }
-                    
-                    // 3. 截止时间检查
                     if (deadlineTime && !isTodayChecked()) {
                         const [h, m] = deadlineTime.split(':').map(Number);
                         const deadline = new Date();
                         deadline.setHours(h, m, 0, 0);
                         
-                        // 触发窗口：超过截止时间且在5分钟内
-                        if (now > deadline && (now - deadline) < 300000) {
-                            if (!isAutoSending && triggeredDate !== todayStr) {
-                                console.log("Triggering alarm...");
-                                setTriggeredDate(todayStr); // 立即上锁
-                                setStatusLevel('triggered');
-                                handleEmergencyTrigger("超时未签到自动触发");
-                            }
+                        if (now > deadline && (now - deadline) < 600000) { 
+                             if (statusLevel !== 'pre_alarm' && statusLevel !== 'triggered') {
+                                 setPreAlarmEndTime(Date.now() + preAlarmDuration * 60 * 1000); 
+                                 setStatusLevel('pre_alarm');
+                                 speak(`检测到您未签到，系统将在${preAlarmDuration}分钟后发送报警邮件。请确认安全。`);
+                             }
+                        }
+                    } else if (statusLevel !== 'vacation' && statusLevel !== 'pre_alarm' && statusLevel !== 'triggered') {
+                        if (lastCheckIn) {
+                            const hours = (now.getTime() - lastCheckIn) / 3600000;
+                            if (hours < 24) setStatusLevel('safe');
+                            else if (hours >= 24 && hours < 48) setStatusLevel('warning');
+                            else setStatusLevel('danger');
                         }
                     }
-                }, 10000);
-                return () => clearInterval(timer);
-            }, [lastCheckIn, deadlineTime, isAutoSending, statusLevel, triggeredDate, mounted]);
 
-            // --- 核心功能 ---
+                }, 3000);
+                return () => clearInterval(timer);
+            }, [lastCheckIn, deadlineTime, statusLevel, triggeredDate, preAlarmEndTime, vacationEnd, preAlarmDuration, mounted]);
+
+            // --- 手动 SOS 倒计时逻辑 ---
+            useEffect(() => {
+                let interval;
+                if (manualSosCountdown !== null && manualSosCountdown > 0) {
+                    interval = setInterval(() => {
+                        setManualSosCountdown((prev) => prev - 1);
+                        playAlarmSound(); // 每秒响一次
+                    }, 1000);
+                } else if (manualSosCountdown === 0) {
+                    // 倒计时结束，触发！
+                    setManualSosCountdown(null);
+                    toggleTorch(false); // 停止闪光灯
+                    handleEmergencyTrigger("用户手动SOS - 倒计时结束触发");
+                    speak("正在发送求助信息");
+                }
+                return () => clearInterval(interval);
+            }, [manualSosCountdown]);
+
+            // --- 业务逻辑 ---
+
+            const startManualSos = () => {
+                setManualSosCountdown(10); // 10秒倒计时
+                toggleTorch(true); // 尝试开启闪光灯
+                speak("警告，即将发送求助信息。点击屏幕取消。");
+            };
+
+            const cancelManualSos = () => {
+                setManualSosCountdown(null);
+                toggleTorch(false); // 关闭闪光灯
+                speak("报警已取消");
+            };
 
             const handleGetLocation = () => {
-                setLocError('');
-                if (!navigator.geolocation) {
-                    setLocError("不支持定位");
-                    return Promise.resolve(null);
-                }
-                
+                if (!navigator.geolocation) return Promise.resolve(null);
                 return new Promise((resolve) => {
                     navigator.geolocation.getCurrentPosition(
                         (pos) => {
-                            const lat = pos.coords.latitude;
-                            const lng = pos.coords.longitude;
+                            const { latitude: lat, longitude: lng } = pos.coords;
                             setUserLocation({ lat, lng });
                             const gcj = wgs84ToGcj02(lat, lng);
                             setGcjLocation(gcj);
-                            resolve({ wgs: {lat, lng}, gcj });
+                            resolve({ gcj });
                         },
-                        (err) => {
-                            let msg = "定位失败";
-                            if (err.code === 1) msg = "权限被拒绝";
-                            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') msg += " (需要HTTPS)";
-                            setLocError(msg);
-                            resolve(null);
-                        },
+                        () => resolve(null),
                         { enableHighAccuracy: true, timeout: 5000 }
                     );
                 });
             };
 
             const connectBluetooth = async () => {
-                if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-                     alert("❌ 蓝牙功能只能在 HTTPS 安全协议下使用。");
-                     return;
-                }
-                if (!navigator.bluetooth) {
-                    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-                    if (isIOS) alert("❌ iOS系统不支持网页蓝牙，请使用安卓或电脑。");
-                    else alert("❌ 您的浏览器不支持 Web Bluetooth API。");
-                    return;
-                }
+                if (!navigator.bluetooth) return alert("浏览器不支持蓝牙或需要HTTPS");
                 try {
                     const device = await navigator.bluetooth.requestDevice({ filters: [{ services: ['heart_rate'] }] });
                     const server = await device.gatt.connect();
                     const service = await server.getPrimaryService('heart_rate');
-                    const characteristic = await service.getCharacteristic('heart_rate_measurement');
-                    await characteristic.startNotifications();
-                    characteristic.addEventListener('characteristicvaluechanged', (event) => {
-                        const value = event.target.value;
-                        const flags = value.getUint8(0);
-                        const hr = (flags & 1) ? value.getUint16(1, true) : value.getUint8(1);
+                    const char = await service.getCharacteristic('heart_rate_measurement');
+                    await char.startNotifications();
+                    char.addEventListener('characteristicvaluechanged', (e) => {
+                        const val = e.target.value;
+                        const hr = (val.getUint8(0) & 1) ? val.getUint16(1, true) : val.getUint8(1);
                         setHeartRate(hr);
                     });
                     setIsBtConnected(true);
-                    alert("✅ 心率设备已连接！");
-                } catch (error) {
-                    alert("❌ 连接失败: " + error.message);
+                    alert("✅ 心率设备已连接");
+                } catch (e) { alert("连接失败: " + e.message); }
+            };
+
+            const handleCheckIn = (mood = selectedMood, fromUrl = false) => {
+                const now = new Date();
+                const todayStr = now.toISOString().split('T')[0];
+                const isFirstToday = !history[todayStr];
+                const newHistory = { ...history, [todayStr]: true };
+                const newMoodHistory = { ...moodHistory, [todayStr]: mood };
+                
+                if (isFirstToday) {
+                    const yest = new Date(now); yest.setDate(yest.getDate() - 1);
+                    const yestStr = yest.toISOString().split('T')[0];
+                    setStreak(history[yestStr] ? streak + 1 : 1);
                 }
-            };
 
-            const getMapLink = (loc) => {
-                if (!loc) return "位置信息不可用";
-                return `https://uri.amap.com/marker?position=${loc.lng},${loc.lat}&name=用户当前位置&callnative=1`;
-            };
-
-            const sendViaEmailJS = async (reason, targetEmail, targetName, locData) => {
-                if (!window.emailjs || !emailConfig.serviceId) return { success: false, msg: "EmailJS未配置" };
-                const mapLink = getMapLink(locData);
-                const templateParams = {
-                    to_name: targetName,
-                    to_email: targetEmail,
-                    user_name: userName || "用户",
-                    alert_reason: reason,
-                    user_status: "未签到/可能处于危险中",
-                    location_link: mapLink,
-                    heart_rate: heartRate ? `${heartRate} BPM` : "无数据",
-                    last_active: lastCheckIn ? new Date(lastCheckIn).toLocaleString() : '无记录',
-                    send_time: new Date().toLocaleString()
-                };
-                try {
-                    await emailjs.send(emailConfig.serviceId, emailConfig.templateId, templateParams);
-                    return { success: true, msg: "EmailJS发送成功" };
-                } catch (error) {
-                    console.error("EmailJS Error:", error);
-                    return { success: false, msg: error.text || "EmailJS发送失败" };
-                }
-            };
-
-            const sendViaMailto = (reason, contacts, locData) => {
-                if (!contacts || contacts.length === 0) return { success: false, msg: "无联系人" };
-                const emails = contacts.map(c => c.email).join(',');
-                const mapLink = getMapLink(locData);
-                const subject = `【紧急】${userName || '用户'} ${reason}`;
-                const body = `状态：${reason}\n时间：${new Date().toLocaleString()}\n心率：${heartRate ? heartRate + ' BPM' : '无数据'}\n\n📍高德地图定位：\n${mapLink}\n\n请尽快确认安全！`;
-                window.location.href = `mailto:${emails}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-                return { success: true, msg: "已唤起邮件APP" };
+                setLastCheckIn(Date.now());
+                setHistory(newHistory);
+                setMoodHistory(newMoodHistory);
+                setFeedbackMsg(WARM_QUOTES[Math.floor(Math.random() * WARM_QUOTES.length)]);
+                setTriggeredDate('');
+                setStatusLevel('safe');
+                if (fromUrl) speak("已通过快捷指令为您签到");
+                else speak("签到成功");
             };
 
             const handleEmergencyTrigger = async (reason) => {
-                if (contacts.length === 0) {
-                    alert("⚠️ 请先在【配置】页添加联系人！");
-                    setTriggeredDate(''); // 没联系人就重置锁，允许下次尝试
-                    return;
-                }
-                
+                if (contacts.length === 0) return;
                 setIsAutoSending(true);
                 const res = await handleGetLocation();
-                const locToUse = res ? res.gcj : (gcjLocation || null);
-                
-                let logs = [];
+                const loc = res ? res.gcj : (gcjLocation || null);
+                const mapLink = loc ? `https://uri.amap.com/marker?position=${loc.lng},${loc.lat}&name=Help&callnative=1` : "位置未知";
+                const commonBody = {
+                    alert_reason: reason,
+                    user_status: "失联/可能处于危险",
+                    location_link: mapLink,
+                    heart_rate: heartRate ? `${heartRate} BPM` : "无数据",
+                    medical_info: medicalInfo || "无急救信息", 
+                    last_active: lastCheckIn ? new Date(lastCheckIn).toLocaleString() : '无记录',
+                };
 
+                let logs = [];
                 if (emailMode === 'auto') {
-                    for (const contact of contacts) {
-                        const r = await sendViaEmailJS(reason, contact.email, contact.name, locToUse);
-                        logs.push(`${contact.name}: ${r.msg}`);
+                    if (!window.emailjs || !emailConfig.serviceId) {
+                        logs.push("EmailJS未配置");
+                    } else {
+                        for (const c of contacts) {
+                            try {
+                                await emailjs.send(emailConfig.serviceId, emailConfig.templateId, {
+                                    ...commonBody, to_name: c.name, to_email: c.email, user_name: userName || '用户'
+                                });
+                                logs.push(`${c.name}: 发送成功`);
+                            } catch (e) { logs.push(`${c.name}: 失败-${e.text}`); }
+                        }
                     }
-                    alert(`🚨 自动报警结束\n\n${logs.join('\n')}`);
+                    alert(`🚨 自动处理完成\n${logs.join('\n')}`);
                 } else {
-                    const r = sendViaMailto(reason, contacts, locToUse);
-                    logs.push(r.msg);
+                    const emails = contacts.map(c => c.email).join(',');
+                    const subject = `【紧急求助】${userName || '用户'} ${reason}`;
+                    const body = `状态: ${reason}\n位置: ${mapLink}\n心率: ${commonBody.heart_rate}\n\n【急救卡】\n${commonBody.medical_info}\n\n请尽快联系！`;
+                    window.location.href = `mailto:${emails}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
                 }
-                
                 setSendLogs(logs);
                 setIsAutoSending(false);
             };
 
-            // 紧急停止报警
-            const handleStopAlarm = () => {
-                setTriggeredDate(''); // 清除触发记录
-                setStatusLevel('safe'); // 重置状态
-                setIsAutoSending(false);
-                alert("✅ 报警已手动解除。系统将在下次超时时再次触发。");
+            // --- 导入导出 ---
+            const openExport = () => {
+                const data = localStorage.getItem(STORAGE_KEY);
+                setConfigText(data);
+                setModalType('export');
+                setCopyStatus('');
             };
 
-            const handleTest = async () => {
-                if (!newContactEmail && contacts.length === 0) {
-                    alert("⚠️ 请先输入或添加一个联系人邮箱。");
-                    return;
-                }
-                const email = newContactEmail || contacts[0].email;
-                const name = newContactName || contacts[0].name || "测试者";
-                const res = await handleGetLocation();
-                const locToUse = res ? res.gcj : (gcjLocation || null);
+            const openImport = () => {
+                setConfigText('');
+                setModalType('import');
+                setCopyStatus('');
+            };
 
-                if (emailMode === 'auto') {
-                    if (!tempEmailConfig.serviceId) {
-                        alert("⚠️ 自动模式下，请先填写EmailJS配置。");
-                        return;
+            const closeModal = () => {
+                setModalType('none');
+                setConfigText('');
+            };
+
+            const confirmImport = () => {
+                if (!configText) return alert("内容不能为空");
+                try {
+                    JSON.parse(configText); // 简单校验
+                    localStorage.setItem(STORAGE_KEY, configText);
+                    alert("✅ 恢复成功！即将刷新...");
+                    window.location.reload();
+                } catch(e) {
+                    alert("❌ 格式错误，请检查代码是否完整");
+                }
+            };
+
+            const copyConfig = () => {
+                navigator.clipboard.writeText(configText).then(() => {
+                    setCopyStatus('已复制!');
+                }).catch(() => {
+                    const textarea = document.getElementById('config-textarea');
+                    if (textarea) {
+                        textarea.select();
+                        document.execCommand('copy');
+                        setCopyStatus('已复制(Fallback)!');
+                    } else {
+                        setCopyStatus('复制失败，请手动全选复制');
                     }
-                    setEmailConfig(tempEmailConfig);
-                    alert("正在尝试通过 EmailJS 发送...");
-                    const r = await sendViaEmailJS("手动测试邮件", email, name, locToUse);
-                    alert(r.success ? "✅ 发送成功！" : `❌ 失败: ${r.msg}`);
-                } else {
-                    sendViaMailto("手动测试邮件", [{email, name}], locToUse);
-                }
+                });
             };
 
-            const handleCheckIn = () => {
-                const now = new Date();
-                const today = now.toISOString().split('T')[0];
-                if (history[today]) return;
-
-                const newHistory = { ...history, [today]: true };
-                const yest = new Date(now); yest.setDate(yest.getDate() - 1);
-                const yestStr = yest.toISOString().split('T')[0];
-                
-                setStreak(history[yestStr] ? streak + 1 : 1);
-                setLastCheckIn(Date.now());
-                setHistory(newHistory);
-                setFeedbackMsg(WARM_QUOTES[Math.floor(Math.random() * WARM_QUOTES.length)]);
-                
-                // 签到后重置所有报警状态
-                setTriggeredDate('');
-                setStatusLevel('safe');
-                setSendLogs([]);
-            };
-
+            // 渲染相关
             const isTodayChecked = () => !!history[new Date().toISOString().split('T')[0]];
-
             const renderCalendar = () => {
                 const now = new Date();
                 const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
                 const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).getDay();
                 const days = [];
-                for (let i = 0; i < firstDay; i++) days.push(<div key={`e-${i}`}></div>);
-                for (let d = 1; d <= daysInMonth; d++) {
+                for (let i=0; i<firstDay; i++) days.push(<div key={`e-${i}`}></div>);
+                for (let d=1; d<=daysInMonth; d++) {
                     const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                     const isChecked = history[dateStr];
-                    const isToday = d === now.getDate();
+                    const mood = moodHistory[dateStr];
+                    const moodIcon = mood ? MOODS.find(m=>m.id===mood)?.icon : '';
                     days.push(
-                        <div key={d} className="flex justify-center items-center h-8 w-8 text-sm relative">
-                            <span className={isToday ? 'font-bold' : ''}>{d}</span>
-                            {isChecked && <div className="absolute inset-0 bg-green-100 text-green-600 rounded-full flex items-center justify-center -z-10"><i className="fas fa-check text-xs"></i></div>}
+                        <div key={d} className="flex justify-center items-center h-8 w-8 text-xs relative">
+                            <span className={d === now.getDate() ? 'font-bold' : ''}>{d}</span>
+                            {isChecked && (
+                                <div className="absolute inset-0 bg-green-50 text-green-600 rounded-full flex items-center justify-center -z-10">
+                                    {moodIcon || <i className="fas fa-check text-[10px]"></i>}
+                                </div>
+                            )}
                         </div>
                     );
                 }
@@ -417,13 +543,48 @@
 
             if (!mounted) return <div className="min-h-screen bg-gray-100 flex items-center justify-center">Loading...</div>;
 
+            // --- 预警覆盖层 (Auto Pre-Alarm) ---
+            if (statusLevel === 'pre_alarm') {
+                const timeLeft = Math.max(0, Math.ceil((preAlarmEndTime - Date.now()) / 1000));
+                return (
+                    <div className="fixed inset-0 z-50 bg-red-500 alarm-active flex flex-col items-center justify-center text-white p-6">
+                        <i className="fas fa-exclamation-triangle text-6xl mb-4 animate-bounce"></i>
+                        <h1 className="text-3xl font-bold mb-2">安全确认</h1>
+                        <p className="text-xl mb-8 text-center">系统检测到您长时间未签到<br/>将在 <strong>{Math.floor(timeLeft/60)}:{String(timeLeft%60).padStart(2,'0')}</strong> 后发送报警邮件</p>
+                        <button onClick={() => handleCheckIn(selectedMood)} className="w-full max-w-sm py-6 bg-white text-red-600 rounded-2xl text-2xl font-bold shadow-lg mb-6 active:scale-95 transition">
+                            我没事 / 立即签到
+                        </button>
+                    </div>
+                );
+            }
+
+            // --- 手动 SOS 覆盖层 (Manual SOS) ---
+            if (manualSosCountdown !== null) {
+                return (
+                    <div className="fixed inset-0 z-50 strobe-active flex flex-col items-center justify-center text-white p-6">
+                        <i className="fas fa-radiation text-6xl mb-4 animate-spin"></i>
+                        <h1 className="text-4xl font-bold mb-2">SOS</h1>
+                        <p className="text-xl mb-4 text-center font-bold">即将发送求助</p>
+                        
+                        <div className="text-9xl font-mono font-bold mb-8 text-black bg-white rounded-full w-40 h-40 flex items-center justify-center shadow-2xl">
+                            {manualSosCountdown}
+                        </div>
+                        
+                        <button onClick={cancelManualSos} className="w-full max-w-sm py-6 bg-gray-900 text-white rounded-2xl text-2xl font-bold shadow-lg mb-6 active:scale-95 transition border-2 border-white">
+                            取消报警
+                        </button>
+                        <p className="text-black font-bold text-center bg-white px-2">如需开启/关闭闪光灯，请确保使用Chrome/Edge且授权相机</p>
+                    </div>
+                );
+            }
+
             return (
-                <div className="min-h-screen pb-24 relative">
+                <div className={`min-h-screen pb-24 relative ${statusLevel === 'vacation' ? 'bg-blue-50' : ''}`}>
                     <div className="bg-white shadow-sm sticky top-0 z-40">
                         <div className="max-w-md mx-auto px-4 py-4 flex justify-between items-center">
                             <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                                <i className="fas fa-shield-cat text-amber-500"></i>
-                                {currentTab === 'home' ? '安全签到' : '设置'}
+                                <i className={`fas ${statusLevel === 'vacation' ? 'fa-plane-departure text-blue-500' : 'fa-shield-cat text-amber-500'}`}></i>
+                                {statusLevel === 'vacation' ? '休假模式中' : '安全守护'}
                             </h1>
                             <div className="flex items-center gap-2 text-sm">
                                 {isBtConnected && <i className="fas fa-heartbeat text-red-500 animate-pulse"></i>}
@@ -435,38 +596,47 @@
                     <div className="max-w-md mx-auto px-4 py-6 space-y-6 animate-fade-in">
                         {currentTab === 'home' && (
                             <>
+                                {/* 状态通知栏 */}
                                 {statusLevel === 'triggered' && (
                                     <div className="bg-red-100 border-l-4 border-red-500 p-4 rounded-r">
-                                        <div className="flex justify-between items-start">
+                                        <div className="flex justify-between items-center">
                                             <div>
-                                                <h3 className="text-red-800 font-bold flex items-center gap-2">
-                                                    {isAutoSending ? <div className="spinner"></div> : <i className="fas fa-exclamation-triangle"></i>}
-                                                    {isAutoSending ? '正在报警...' : '已触发报警'}
-                                                </h3>
-                                                <div className="text-red-700 text-xs mt-2">
-                                                    已记录今日触发，不会重复发送。
-                                                </div>
+                                                <h3 className="text-red-800 font-bold">已触发报警</h3>
+                                                <p className="text-red-700 text-xs mt-1">邮件已发送。今日不再重复触发。</p>
                                             </div>
-                                            {/* 紧急停止按钮 */}
-                                            <button onClick={handleStopAlarm} className="px-3 py-1 bg-red-200 text-red-800 text-xs rounded border border-red-300">
-                                                停止/重置
-                                            </button>
+                                            <button onClick={() => {setTriggeredDate(''); setStatusLevel('safe');}} className="px-3 py-1 bg-red-200 text-red-800 text-xs rounded">重置</button>
                                         </div>
                                     </div>
                                 )}
+                                {statusLevel === 'vacation' && (
+                                    <div className="bg-blue-100 border-l-4 border-blue-500 p-4 rounded-r text-blue-800 text-sm">
+                                        🏖️ 假期模式开启中，暂停自动报警。<br/>
+                                        结束日期：{vacationEnd}
+                                    </div>
+                                )}
 
+                                {/* 核心签到卡片 */}
                                 <div className="glass-card rounded-2xl p-6 shadow-lg text-center bg-white relative overflow-hidden">
                                     <div className="mb-2 text-gray-500 text-sm">已平安守护</div>
                                     <div className="text-5xl font-bold text-gray-800 mb-2 font-mono">{streak} <span className="text-lg font-normal text-gray-500">天</span></div>
-                                    <div className="text-xs text-gray-400 mb-6 flex justify-center gap-3">
+                                    <div className="text-xs text-gray-400 mb-4 flex justify-center gap-3">
                                         <span>上次: {lastCheckIn ? new Date(lastCheckIn).toLocaleDateString() : '无'}</span>
                                         {deadlineTime && <span className="bg-orange-100 text-orange-600 px-2 rounded">截止: {deadlineTime}</span>}
                                     </div>
 
                                     {!isTodayChecked() ? (
-                                        <button onClick={handleCheckIn} className="w-full py-4 bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-xl shadow-md text-lg font-bold flex justify-center items-center gap-2 active:scale-95 transition">
-                                            <i className="fas fa-fingerprint"></i> 报平安
-                                        </button>
+                                        <div className="space-y-3">
+                                            <div className="flex justify-center gap-4 mb-2">
+                                                {MOODS.map(m => (
+                                                    <button key={m.id} onClick={() => setSelectedMood(m.id)} className={`text-2xl transition transform hover:scale-110 ${selectedMood === m.id ? 'scale-125 drop-shadow-md' : 'opacity-50 grayscale'}`}>
+                                                        {m.icon}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <button onClick={() => handleCheckIn()} className="w-full py-4 bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-xl shadow-md text-lg font-bold flex justify-center items-center gap-2 active:scale-95 transition">
+                                                <i className="fas fa-fingerprint"></i> 报平安 ({MOODS.find(m=>m.id===selectedMood).label})
+                                            </button>
+                                        </div>
                                     ) : (
                                         <div className="w-full py-4 bg-green-50 text-green-600 rounded-xl border border-green-100 flex justify-center items-center gap-2">
                                             <i className="fas fa-check-circle"></i> 今日已完成
@@ -475,6 +645,7 @@
                                     {feedbackMsg && <div className="mt-4 text-amber-600 text-sm italic">{feedbackMsg}</div>}
                                 </div>
 
+                                {/* 日历 */}
                                 <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
                                     <div className="grid grid-cols-7 gap-1 text-center text-xs text-gray-400 mb-2">
                                         <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
@@ -482,104 +653,129 @@
                                     <div className="grid grid-cols-7 gap-1">{renderCalendar()}</div>
                                 </div>
                                 
-                                <button onClick={() => handleEmergencyTrigger("用户手动SOS")} disabled={isAutoSending} className="w-full py-3 bg-red-50 text-red-600 rounded-xl border border-red-100 text-sm font-bold flex justify-center items-center gap-2 mt-4">
-                                    {isAutoSending ? <div className="spinner w-4 h-4 border-red-200 border-l-red-600"></div> : <i className="fas fa-bell"></i>}
-                                    {emailMode === 'auto' ? '自动发送SOS' : '手动唤起SOS邮件'}
+                                <button onClick={startManualSos} disabled={isAutoSending} className="w-full py-3 bg-red-50 text-red-600 rounded-xl border border-red-100 text-sm font-bold flex justify-center items-center gap-2 mt-4 active:scale-95 transition">
+                                    {isAutoSending ? <div className="spinner w-4 h-4"></div> : <i className="fas fa-bell"></i>}
+                                    立即发送SOS (10s倒计时)
                                 </button>
-                                <p className="text-center text-[10px] text-gray-400 mt-2">
-                                    当前模式: {emailMode === 'auto' ? 'EmailJS自动发送' : '本机邮件APP发送 (免费/国内)'}
-                                </p>
                             </>
                         )}
 
                         {currentTab === 'mine' && (
                             <>
-                                {/* 发送模式选择 */}
                                 <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-                                    <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
-                                        <i className="fas fa-paper-plane text-indigo-500"></i> 
-                                        发送模式选择
-                                    </h3>
+                                    <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2"><i className="fas fa-toolbox text-gray-500"></i> 工具箱</h3>
                                     <div className="grid grid-cols-2 gap-3 mb-4">
-                                        <button onClick={() => setEmailMode('manual')} className={`p-3 rounded-lg border text-sm flex flex-col items-center gap-1 ${emailMode === 'manual' ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'border-gray-200 text-gray-500'}`}>
-                                            <i className="fas fa-mobile-screen"></i>
-                                            <span className="font-bold">手动 (免费)</span>
-                                            <span className="text-[10px]">唤起QQ/网易APP</span>
+                                        <button onClick={openExport} className="py-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-600">
+                                            <i className="fas fa-copy"></i> 导出配置
                                         </button>
-                                        <button onClick={() => setEmailMode('auto')} className={`p-3 rounded-lg border text-sm flex flex-col items-center gap-1 ${emailMode === 'auto' ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'border-gray-200 text-gray-500'}`}>
-                                            <i className="fas fa-robot"></i>
-                                            <span className="font-bold">自动 (EmailJS)</span>
-                                            <span className="text-[10px]">后台静默发送</span>
+                                        <button onClick={openImport} className="py-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-600">
+                                            <i className="fas fa-file-import"></i> 导入/恢复
                                         </button>
                                     </div>
-
-                                    {/* EmailJS 配置区 */}
-                                    {emailMode === 'auto' && (
-                                        <div className="bg-orange-50 p-4 rounded-lg border border-orange-100 animate-fade-in">
-                                            <p className="text-[10px] text-orange-800 mb-2 font-bold">EmailJS 配置 (每月200封免费):</p>
-                                            <div className="space-y-2">
-                                                <input type="text" value={tempEmailConfig.serviceId} onChange={e => setTempEmailConfig({...tempEmailConfig, serviceId: e.target.value})} placeholder="Service ID" className="w-full p-2 border rounded text-xs" />
-                                                <input type="text" value={tempEmailConfig.templateId} onChange={e => setTempEmailConfig({...tempEmailConfig, templateId: e.target.value})} placeholder="Template ID" className="w-full p-2 border rounded text-xs" />
-                                                <input type="text" value={tempEmailConfig.publicKey} onChange={e => setTempEmailConfig({...tempEmailConfig, publicKey: e.target.value})} placeholder="Public Key" className="w-full p-2 border rounded text-xs" />
-                                            </div>
+                                    <div className="border-t pt-3">
+                                        <label className="text-xs font-bold text-gray-600 block mb-2">🏖️ 假期/请假模式</label>
+                                        <div className="flex gap-2">
+                                            <input type="date" value={vacationEnd} onChange={e => setVacationEnd(e.target.value)} className="flex-1 p-2 border rounded text-sm bg-gray-50" />
+                                            <button onClick={() => setVacationEnd('')} className="px-3 py-2 bg-gray-200 rounded text-xs">清除</button>
                                         </div>
-                                    )}
+                                    </div>
+                                </div>
+
+                                <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100 border-l-4 border-l-red-400">
+                                    <h3 className="font-bold text-gray-800 mb-2 flex items-center gap-2"><i className="fas fa-kit-medical text-red-500"></i> 急救卡</h3>
+                                    <textarea value={medicalInfo} onChange={e => setMedicalInfo(e.target.value)} placeholder="血型、过敏史、常备药..." className="w-full h-20 p-2 border rounded text-sm bg-red-50"></textarea>
                                 </div>
 
                                 <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-                                    <h3 className="font-bold text-gray-800 mb-4 text-sm"><i className="fas fa-users text-blue-500"></i> 紧急联系人</h3>
-                                    <div className="space-y-2 mb-3">
+                                    <h3 className="font-bold text-gray-800 mb-4 text-sm"><i className="fas fa-gear text-gray-400"></i> 基础设置</h3>
+                                    <div className="space-y-3 mb-4">
+                                        <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="您的昵称" className="w-full p-2 border rounded text-sm bg-gray-50" />
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-xs text-gray-500">最晚签到时间</span>
+                                            <input type="time" value={deadlineTime} onChange={(e) => setDeadlineTime(e.target.value)} className="p-1 border rounded text-sm bg-gray-50" />
+                                        </div>
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-xs text-gray-500">报警缓冲时间 (分钟)</span>
+                                            <input type="number" value={preAlarmDuration} onChange={(e) => setPreAlarmDuration(Number(e.target.value))} className="p-1 border rounded text-sm bg-gray-50 w-16 text-center" min="1" max="60" />
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2 mb-3 border-t pt-3">
+                                        <p className="text-xs font-bold text-gray-600">紧急联系人</p>
                                         {contacts.map(c => (
                                             <div key={c.id} className="flex justify-between p-2 bg-gray-50 rounded text-sm items-center">
                                                 <span>{c.name} <span className="text-gray-400 text-xs">({c.email})</span></span>
                                                 <button onClick={() => setContacts(contacts.filter(x => x.id !== c.id))} className="text-gray-300 hover:text-red-500"><i className="fas fa-times"></i></button>
                                             </div>
                                         ))}
-                                        {contacts.length === 0 && <div className="text-xs text-center text-gray-400">无联系人</div>}
-                                    </div>
-                                    <div className="flex gap-2 mb-3">
-                                        <input type="text" placeholder="称呼" className="w-1/3 p-2 border rounded text-sm" value={newContactName} onChange={e => setNewContactName(e.target.value)} />
-                                        <input type="email" placeholder="邮箱" className="flex-1 p-2 border rounded text-sm" value={newContactEmail} onChange={e => setNewContactEmail(e.target.value)} />
-                                        <button onClick={() => {
-                                            if(!newContactName || !newContactEmail) return;
-                                            setContacts([...contacts, {id: Date.now(), name: newContactName, email: newContactEmail}]);
-                                            setNewContactName(''); setNewContactEmail('');
-                                        }} className="px-3 bg-blue-500 text-white rounded text-sm">添加</button>
-                                    </div>
-                                    <button onClick={handleTest} className="w-full py-2 border border-blue-200 text-blue-600 rounded text-sm hover:bg-blue-50">
-                                        <i className="fas fa-paper-plane mr-1"></i> 测试发送 (当前模式)
-                                    </button>
-                                </div>
-
-                                <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-                                    <h3 className="font-bold text-gray-800 mb-4 text-sm"><i className="fas fa-gear text-gray-400"></i> 设备与设置</h3>
-                                    <div className="space-y-3">
-                                        <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="您的昵称" className="w-full p-2 border rounded text-sm bg-gray-50" />
-                                        <div className="flex justify-between items-center">
-                                            <span className="text-xs text-gray-500">自动报警截止时间</span>
-                                            <input type="time" value={deadlineTime} onChange={(e) => setDeadlineTime(e.target.value)} className="p-1 border rounded text-sm bg-gray-50" />
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-3">
+                                        <div className="flex gap-2">
+                                            <input type="text" placeholder="称呼" className="w-1/3 p-2 border rounded text-sm" value={newContactName} onChange={e => setNewContactName(e.target.value)} />
+                                            <input type="email" placeholder="邮箱" className="flex-1 p-2 border rounded text-sm" value={newContactEmail} onChange={e => setNewContactEmail(e.target.value)} />
                                             <button onClick={() => {
-                                                handleGetLocation().then(res => {
-                                                    const loc = res ? res.gcj : null;
-                                                    alert(loc ? `✅ 高德坐标获取成功:\n${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}` : `❌ ${locError}`);
-                                                });
-                                            }} className="py-2 bg-blue-50 text-blue-600 rounded text-sm border border-blue-100 flex flex-col items-center justify-center">
-                                                <i className={`fas fa-location-dot mb-1 ${userLocation ? 'text-blue-600' : 'text-gray-400'}`}></i>
-                                                {userLocation ? '刷新定位' : '授权定位'}
-                                            </button>
-                                            <button onClick={connectBluetooth} className={`py-2 rounded text-sm border flex flex-col items-center justify-center ${isBtConnected ? 'bg-red-50 text-red-600 border-red-100' : 'bg-gray-50 text-gray-600 border-gray-200'}`}>
-                                                <i className={`fas fa-heartbeat mb-1 ${isBtConnected ? 'animate-pulse text-red-500' : 'text-gray-400'}`}></i>
-                                                {isBtConnected ? `${heartRate || '--'} BPM` : '连接心率'}
-                                            </button>
+                                                if(!newContactName || !newContactEmail) return;
+                                                setContacts([...contacts, {id: Date.now(), name: newContactName, email: newContactEmail}]);
+                                                setNewContactName(''); setNewContactEmail('');
+                                            }} className="px-3 bg-blue-500 text-white rounded text-sm">添加</button>
                                         </div>
                                     </div>
+                                    <div className="flex items-center justify-between border-t pt-3">
+                                        <span className="text-xs font-bold text-gray-600">发送模式</span>
+                                        <div className="flex gap-2 text-xs">
+                                            <button onClick={() => setEmailMode('manual')} className={`px-2 py-1 rounded border ${emailMode === 'manual' ? 'bg-indigo-100 border-indigo-500 text-indigo-700' : ''}`}>手动</button>
+                                            <button onClick={() => setEmailMode('auto')} className={`px-2 py-1 rounded border ${emailMode === 'auto' ? 'bg-indigo-100 border-indigo-500 text-indigo-700' : ''}`}>自动</button>
+                                        </div>
+                                    </div>
+                                    {emailMode === 'auto' && (
+                                        <div className="mt-2 space-y-2 bg-indigo-50 p-2 rounded">
+                                            <input type="text" value={tempEmailConfig.serviceId} onChange={e => setTempEmailConfig({...tempEmailConfig, serviceId: e.target.value})} placeholder="Service ID" className="w-full p-1 border rounded text-xs" />
+                                            <input type="text" value={tempEmailConfig.templateId} onChange={e => setTempEmailConfig({...tempEmailConfig, templateId: e.target.value})} placeholder="Template ID" className="w-full p-1 border rounded text-xs" />
+                                            <input type="text" value={tempEmailConfig.publicKey} onChange={e => setTempEmailConfig({...tempEmailConfig, publicKey: e.target.value})} placeholder="Public Key" className="w-full p-1 border rounded text-xs" />
+                                            <button onClick={() => {setEmailConfig(tempEmailConfig); alert("配置已保存");}} className="w-full py-1 bg-indigo-500 text-white rounded text-xs">保存配置</button>
+                                        </div>
+                                    )}
                                 </div>
+                                <div className="h-4"></div>
                             </>
                         )}
                     </div>
                     <TabBar currentTab={currentTab} onTabChange={setCurrentTab} />
+
+                    {/* 自定义 Modal */}
+                    {modalType !== 'none' && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                            <div className="absolute inset-0 bg-black bg-opacity-50" onClick={closeModal}></div>
+                            <div className="bg-white rounded-xl w-full max-w-sm p-5 z-10 shadow-2xl modal-enter relative">
+                                <button onClick={closeModal} className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"><i className="fas fa-times"></i></button>
+                                
+                                <h3 className="text-lg font-bold mb-3 text-gray-800">
+                                    {modalType === 'export' ? '导出配置' : '导入恢复'}
+                                </h3>
+                                
+                                <p className="text-xs text-gray-500 mb-2">
+                                    {modalType === 'export' 
+                                        ? '请复制下方代码，保存到备忘录或发送给新设备。' 
+                                        : '请将之前导出的配置代码粘贴到下方：'}
+                                </p>
+
+                                <textarea 
+                                    id="config-textarea"
+                                    value={configText} 
+                                    onChange={e => setConfigText(e.target.value)} 
+                                    className="w-full h-32 p-2 border rounded bg-gray-50 text-xs font-mono mb-3 break-all focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    readOnly={modalType === 'export'}
+                                ></textarea>
+
+                                {modalType === 'export' ? (
+                                    <button onClick={copyConfig} className="w-full py-2 bg-blue-600 text-white rounded font-medium hover:bg-blue-700 transition">
+                                        {copyStatus || '复制到剪贴板'}
+                                    </button>
+                                ) : (
+                                    <button onClick={confirmImport} className="w-full py-2 bg-green-600 text-white rounded font-medium hover:bg-green-700 transition">
+                                        确认导入并重启
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         };
