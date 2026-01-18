@@ -1,0 +1,1165 @@
+import React, { useState, useEffect, useRef } from 'react';
+import Peer, { DataConnection } from 'peerjs'; // 需要安装: npm install peerjs
+import { Palette, Trash2, Send, Copy, User, Eraser, Play, CheckCircle, AlertTriangle, Loader2, Wifi, WifiOff, Server, MonitorSmartphone } from 'lucide-react';
+
+// --- 常量与配置 ---
+// 使用国内友好的 STUN 服务器加速 P2P 连接
+const ICE_SERVERS = [
+  { urls: 'stun:stun.qq.com:3478' },
+  { urls: 'stun:stun.miwifi.com:3478' },
+  { urls: 'stun:stun.l.google.com:19302' } // 备用
+];
+
+const PEER_ID_PREFIX = 'dg-game-v1-'; // 防止 ID 冲突的前缀
+
+const WORDS = ["熊猫", "火锅", "奶茶", "高铁", "手机", "电脑", "孙悟空", "月饼", "长城", "饺子", "足球", "外卖"];
+const COLORS = ['#000000', '#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7', '#ffffff'];
+const LINE_WIDTHS = [2, 5, 10];
+
+// --- 类型定义 ---
+type Point = { x: number; y: number };
+type Line = { points: Point[]; color: string; width: number };
+type Player = { uid: string; name: string; score: number; isHost: boolean };
+type Message = { sender: string; text: string; type: 'chat' | 'system' | 'correct' };
+
+type GameState = {
+  status: 'LOBBY' | 'SELECTING' | 'DRAWING' | 'ENDED';
+  players: Player[];
+  currentDrawerIndex: number;
+  currentWord: string;
+  messages: Message[];
+  lines: Line[]; // P2P 模式下，画面也是状态的一部分，由房主统一分发
+  version: number;
+};
+
+// 初始状态
+const INITIAL_STATE: GameState = {
+  status: 'LOBBY',
+  players: [],
+  currentDrawerIndex: 0,
+  currentWord: '',
+  messages: [],
+  lines: [],
+  version: 0
+};
+
+// --- 主组件 ---
+export default function DrawAndGuessApp() {
+  // 基础状态
+  const [view, setView] = useState<'LOGIN' | 'LOBBY' | 'GAME'>('LOGIN');
+  const [user, setUser] = useState<Player | null>(null);
+  const [username, setUsername] = useState('');
+  const [roomId, setRoomId] = useState('');
+  
+  // P2P 状态
+  const [peer, setPeer] = useState<Peer | null>(null);
+  const [connections, setConnections] = useState<DataConnection[]>([]); // 仅房主使用：存储所有连接进来的玩家
+  const [hostConn, setHostConn] = useState<DataConnection | null>(null); // 仅玩家使用：存储连向房主的连接
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectError, setConnectError] = useState('');
+
+  // 游戏同步数据 (本地渲染用)
+  const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
+  
+  // 本地交互状态
+  const [currentLine, setCurrentLine] = useState<Line | null>(null);
+  const [selectedColor, setSelectedColor] = useState('#000000');
+  const [selectedWidth, setSelectedWidth] = useState(5);
+  const [inputGuess, setInputGuess] = useState('');
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  
+  // 房主专用：保存最新状态的 Ref，用于在收到消息时获取最新状态进行更新
+  // (React 的 state 在回调闭包中可能是旧的，所以用 Ref 辅助)
+  const gameStateRef = useRef<GameState>(INITIAL_STATE);
+
+  // 同步 Ref 和 State
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  // --- 1. P2P 连接逻辑 ---
+
+  // 初始化 Peer (当进入大厅并点击创建/加入时触发)
+  const initPeer = (customId?: string) => {
+    const newPeer = new Peer(customId, {
+      config: { iceServers: ICE_SERVERS },
+      debug: 1
+    });
+
+    newPeer.on('open', (id) => {
+      console.log('My Peer ID is: ' + id);
+      setIsConnected(true);
+      setConnectError('');
+    });
+
+    newPeer.on('error', (err) => {
+      console.error('Peer Error:', err);
+      setIsConnected(false);
+      if (err.type === 'unavailable-id') {
+        setConnectError('房间号已被占用，请换一个');
+        setView('LOBBY');
+      } else if (err.type === 'peer-unavailable') {
+        setConnectError('找不到房间，房主可能离线或房间号错误');
+        setView('LOBBY');
+      } else {
+        setConnectError('连接错误: ' + err.type);
+      }
+    });
+
+    return newPeer;
+  };
+
+  // --- 房主逻辑 (Host Logic) ---
+  const createRoom = () => {
+    if (!username || !roomId) return;
+    const fullRoomId = PEER_ID_PREFIX + roomId;
+    
+    // 1. 初始化房主 Peer，强制使用房间号作为 ID
+    const newPeer = initPeer(fullRoomId);
+    setPeer(newPeer);
+
+    const me: Player = { uid: fullRoomId, name: username, score: 0, isHost: true };
+    setUser(me);
+    
+    // 初始化游戏状态
+    const initialState = {
+      ...INITIAL_STATE,
+      players: [me],
+      messages: [{ sender: '系统', text: `房间 ${roomId} 创建成功！你是房主`, type: 'system' } as Message]
+    };
+    setGameState(initialState);
+
+    // 2. 监听玩家连接
+    newPeer.on('connection', (conn) => {
+      console.log('新玩家连接:', conn.peer);
+      
+      conn.on('open', () => {
+        // 保存连接
+        setConnections(prev => [...prev, conn]);
+        
+        // 发送当前完整状态给新玩家
+        conn.send({ type: 'STATE_SYNC', state: gameStateRef.current });
+      });
+
+      conn.on('data', (data: any) => {
+        handleHostReceiveData(data, conn);
+      });
+
+      conn.on('close', () => {
+        // 玩家断开，从列表移除
+        setConnections(prev => prev.filter(c => c.peer !== conn.peer));
+        // 更新游戏状态中的玩家列表
+        const newState = {
+           ...gameStateRef.current,
+           players: gameStateRef.current.players.filter(p => !p.uid.includes(conn.peer)) // 简化匹配
+        };
+        updateAndBroadcastState(newState);
+      });
+    });
+
+    setView('GAME');
+  };
+
+  // 房主处理接收到的数据
+  const handleHostReceiveData = (data: any, senderConn: DataConnection) => {
+    const currentState = gameStateRef.current;
+
+    if (data.type === 'PLAYER_JOIN') {
+      // 玩家申请加入
+      const newPlayer = { ...data.player, uid: senderConn.peer, isHost: false };
+      const newState = {
+        ...currentState,
+        players: [...currentState.players, newPlayer],
+        messages: [...currentState.messages, { sender: '系统', text: `${newPlayer.name} 加入了游戏`, type: 'system' } as Message]
+      };
+      updateAndBroadcastState(newState);
+    } 
+    else if (data.type === 'DRAW_LINE') {
+      // 玩家画线
+      const newState = {
+        ...currentState,
+        lines: [...currentState.lines, data.line]
+      };
+      // 这里不重新广播所有 Lines，优化点：只广播增量，但为了简单，这里广播全量
+      // 实际优化：房主本地更新 State，并向所有人转发这条线
+      setGameState(newState); 
+      broadcast({ type: 'DRAW_ACTION', line: data.line, sender: senderConn.peer });
+    }
+    else if (data.type === 'CHAT_MESSAGE') {
+      // 玩家发言/猜题
+      const msg = data.message;
+      const isDrawing = currentState.status === 'DRAWING';
+      const isCorrect = isDrawing && msg.trim() === currentState.currentWord;
+
+      if (isCorrect) {
+        // 猜对了
+        const drawerId = currentState.players[currentState.currentDrawerIndex].uid;
+        const guesserId = senderConn.peer; // 使用 connection id 作为 uid 匹配
+
+        const updatedPlayers = currentState.players.map(p => {
+          if (p.uid === guesserId) return { ...p, score: p.score + 10 };
+          if (p.uid === drawerId) return { ...p, score: p.score + 5 };
+          return p;
+        });
+
+        // 结算并切到下一轮
+        const nextIndex = (currentState.currentDrawerIndex + 1) % currentState.players.length;
+        const newState = {
+          ...currentState,
+          players: updatedPlayers,
+          status: 'SELECTING',
+          currentDrawerIndex: nextIndex,
+          lines: [], // 清空画布
+          messages: [...currentState.messages, { sender: '系统', text: `${data.senderName} 猜对了！答案是 ${currentState.currentWord}`, type: 'correct' } as Message]
+        };
+        // 这里必须转换类型为字面量以匹配 GameState
+        updateAndBroadcastState(newState as GameState);
+
+      } else {
+        // 普通聊天
+        const newState = {
+          ...currentState,
+          messages: [...currentState.messages, { sender: data.senderName, text: msg, type: 'chat' } as Message]
+        };
+        updateAndBroadcastState(newState);
+      }
+    }
+  };
+
+  // 房主广播数据
+  const broadcast = (payload: any) => {
+    connections.forEach(conn => {
+      if (conn.open) conn.send(payload);
+    });
+  };
+
+  // 房主更新状态并广播
+  const updateAndBroadcastState = (newState: GameState) => {
+    setGameState(newState);
+    broadcast({ type: 'STATE_SYNC', state: newState });
+  };
+
+
+  // --- 玩家逻辑 (Guest Logic) ---
+  const joinRoom = () => {
+    if (!username || !roomId) return;
+    
+    // 1. 初始化玩家 Peer (随机 ID)
+    const newPeer = initPeer();
+    setPeer(newPeer);
+
+    const me: Player = { uid: 'temp', name: username, score: 0, isHost: false }; // uid 会在连上后被房主修正
+    setUser(me);
+
+    // 2. 连接房主
+    const hostId = PEER_ID_PREFIX + roomId;
+    const conn = newPeer.connect(hostId);
+    
+    conn.on('open', () => {
+      console.log('已连接到房主');
+      setHostConn(conn);
+      setIsConnected(true);
+      // 发送加入请求
+      conn.send({ type: 'PLAYER_JOIN', player: me });
+    });
+
+    conn.on('data', (data: any) => {
+      if (data.type === 'STATE_SYNC') {
+        setGameState(data.state);
+        // 自动滚动聊天
+        if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      } 
+      else if (data.type === 'DRAW_ACTION') {
+        // 收到增量画线
+        setGameState(prev => ({
+          ...prev,
+          lines: [...prev.lines, data.line]
+        }));
+      }
+    });
+
+    conn.on('close', () => {
+      alert("与房主断开连接（房主可能退出了）");
+      setView('LOBBY');
+    });
+
+    conn.on('error', (err) => {
+      console.error("连接房主失败", err);
+      setConnectError("无法连接房主，请检查房间号");
+    });
+
+    setView('GAME');
+  };
+
+  const guestSendDraw = (line: Line) => {
+    if (hostConn && hostConn.open) {
+      hostConn.send({ type: 'DRAW_LINE', line });
+    }
+  };
+
+  const guestSendMessage = (text: string) => {
+    if (hostConn && hostConn.open) {
+      hostConn.send({ type: 'CHAT_MESSAGE', message: text, senderName: username });
+    }
+  };
+
+
+  // --- 房主操作逻辑 ---
+  const hostStartGame = () => {
+    const newState: GameState = {
+      ...gameStateRef.current,
+      status: 'SELECTING',
+      currentDrawerIndex: 0,
+      lines: [],
+      messages: [...gameStateRef.current.messages, { sender: '系统', text: '游戏开始！', type: 'system' }]
+    };
+    updateAndBroadcastState(newState);
+  };
+
+  const hostSelectWord = (word: string) => {
+    const newState: GameState = {
+      ...gameStateRef.current,
+      status: 'DRAWING',
+      currentWord: word,
+      lines: [],
+      messages: [...gameStateRef.current.messages, { sender: '系统', text: '画手已选题，请作画！', type: 'system' }]
+    };
+    updateAndBroadcastState(newState);
+  };
+
+  const hostClearCanvas = () => {
+    const newState = { ...gameStateRef.current, lines: [] };
+    updateAndBroadcastState(newState);
+  };
+
+
+  // --- 通用交互 ---
+  
+  // 发送消息/猜题
+  const handleInputSubmit = () => {
+    if (!inputGuess.trim()) return;
+    
+    if (user?.isHost) {
+      // 房主自己就是服务器，直接走房主逻辑
+      // 模拟一个伪造的 connection 对象传给自己
+      handleHostReceiveData(
+        { type: 'CHAT_MESSAGE', message: inputGuess, senderName: user.name }, 
+        { peer: user.uid } as DataConnection
+      );
+    } else {
+      guestSendMessage(inputGuess);
+    }
+    setInputGuess('');
+  };
+
+  // --- 绘图与 Canvas (通用) ---
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // 适配
+    const parent = canvas.parentElement;
+    if (parent) {
+       canvas.width = parent.clientWidth;
+       canvas.height = parent.clientWidth;
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // 绘制所有线条
+    gameState.lines.forEach(l => {
+      ctx.beginPath();
+      ctx.strokeStyle = l.color;
+      ctx.lineWidth = l.width;
+      ctx.moveTo(l.points[0].x, l.points[0].y);
+      for(let i=1; i<l.points.length; i++) ctx.lineTo(l.points[i].x, l.points[i].y);
+      ctx.stroke();
+    });
+    
+    // 绘制当前正在画的
+    if (currentLine) {
+      ctx.beginPath();
+      ctx.strokeStyle = currentLine.color;
+      ctx.lineWidth = currentLine.width;
+      ctx.moveTo(currentLine.points[0].x, currentLine.points[0].y);
+      for(let i=1; i<currentLine.points.length; i++) ctx.lineTo(currentLine.points[i].x, currentLine.points[i].y);
+      ctx.stroke();
+    }
+  }, [gameState.lines, currentLine, view]);
+
+  // 鼠标事件
+  const getPos = (e: any) => {
+    const r = canvasRef.current!.getBoundingClientRect();
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const y = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return { x, y };
+  };
+
+  const startDraw = (e: any) => {
+    if (gameState.status !== 'DRAWING') return;
+    // 检查是否轮到自己
+    const currentDrawer = gameState.players[gameState.currentDrawerIndex];
+    // 房主判断 uid 完全匹配，玩家判断是否是自己 (玩家存储的 uid 在连接后可能不一致，这里简单判断 name，严谨应用需改)
+    // 修正：玩家连接成功后，房主 State 里的 uid 是玩家的 PeerID。玩家自己的 user.uid 只是 'temp'。
+    // 所以逻辑是：如果我是房主，uid === currentDrawer.uid。如果我是玩家，hostConn.id === currentDrawer.uid? 不对。
+    // 简化逻辑：如果是房主，判断 uid。如果是玩家，判断 currentDrawer.uid 是否等于 myPeerId。
+    
+    const myId = user?.isHost ? user.uid : peer?.id;
+    if (currentDrawer?.uid !== myId) return;
+
+    const {x, y} = getPos(e);
+    setCurrentLine({ points: [{x, y}], color: selectedColor, width: selectedWidth });
+  };
+
+  const moveDraw = (e: any) => {
+    if (!currentLine) return;
+    const {x, y} = getPos(e);
+    setCurrentLine(prev => prev ? { ...prev, points: [...prev.points, {x, y}] } : null);
+  };
+
+  const endDraw = () => {
+    if (!currentLine) return;
+    // 提交线条
+    if (user?.isHost) {
+      // 房主直接更新
+      const newState = { ...gameStateRef.current, lines: [...gameStateRef.current.lines, currentLine] };
+      updateAndBroadcastState(newState);
+    } else {
+      // 玩家发送给房主
+      guestSendDraw(currentLine);
+      // 本地乐观更新 (为了流畅，但这会造成闪烁如果网络慢，先不做，完全依赖回传)
+    }
+    setCurrentLine(null);
+  };
+
+
+  // --- 视图 ---
+
+  if (view === 'LOGIN') {
+    return (
+      <div className="min-h-screen bg-indigo-50 flex flex-col items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm border-4 border-indigo-400">
+          <h1 className="text-3xl font-bold text-center text-indigo-600 mb-6 flex items-center justify-center gap-2"><Palette/> 你画我猜 <span className="text-xs bg-indigo-100 px-2 rounded">P2P版</span></h1>
+          <div className="space-y-4">
+            <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full border-2 p-3 rounded-xl" placeholder="请输入昵称" maxLength={8} />
+            <button onClick={() => username && setView('LOBBY')} className="w-full bg-indigo-500 text-white font-bold py-3 rounded-xl shadow active:scale-95">开始</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'LOBBY') {
+    return (
+      <div className="min-h-screen bg-blue-50 flex flex-col items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm border-4 border-blue-400">
+          <h2 className="text-2xl font-bold text-gray-800 mb-2">游戏大厅</h2>
+          {connectError && <div className="mb-4 p-2 bg-red-100 text-red-600 text-xs rounded flex items-center gap-1"><AlertTriangle size={12}/> {connectError}</div>}
+          
+          <div className="space-y-4">
+            <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+              <h3 className="font-bold text-blue-800 mb-2 flex items-center gap-2"><Server size={16}/> 我当房主</h3>
+              <div className="flex gap-2">
+                <input type="number" value={roomId} onChange={e => setRoomId(e.target.value)} placeholder="设置房间号 (如 666)" className="flex-1 border p-2 rounded" />
+                <button onClick={createRoom} className="bg-blue-600 text-white px-4 rounded font-bold text-sm">创建</button>
+              </div>
+            </div>
+
+            <div className="p-4 bg-green-50 rounded-xl border border-green-100">
+              <h3 className="font-bold text-green-800 mb-2 flex items-center gap-2"><MonitorSmartphone size={16}/> 我是玩家</h3>
+              <div className="flex gap-2">
+                <input type="number" value={roomId} onChange={e => setRoomId(e.target.value)} placeholder="输入房间号" className="flex-1 border p-2 rounded" />
+                <button onClick={joinRoom} className="bg-green-600 text-white px-4 rounded font-bold text-sm">加入</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 游戏界面
+  const isDrawer = gameState.players[gameState.currentDrawerIndex]?.uid === (user?.isHost ? user.uid : peer?.id);
+  
+  return (
+    <div className="min-h-screen bg-gray-100 flex flex-col max-w-md mx-auto shadow-2xl h-screen">
+      <header className="bg-white p-2 shadow z-10 flex justify-between items-center shrink-0">
+        <div className="flex flex-col"><span className="text-xs text-gray-500">房间号</span><b className="text-blue-600">{roomId}</b></div>
+        <div className="flex items-center gap-2">
+           <span className={`flex items-center text-xs ${isConnected?'text-green-500':'text-red-500'}`}>{isConnected ? <Wifi size={14}/> : <WifiOff size={14}/>} {user?.isHost ? '房主' : '玩家'}</span>
+           <button onClick={() => window.location.reload()} className="text-red-500 text-sm">退出</button>
+        </div>
+      </header>
+
+      <div className="flex-1 flex flex-col relative overflow-hidden">
+        {/* 顶部状态条 */}
+        <div className="bg-yellow-100 p-2 text-center text-yellow-800 text-sm font-bold">
+           {gameState.status === 'LOBBY' && `等待玩家... (${gameState.players.length}人)`}
+           {gameState.status === 'SELECTING' && (isDrawer ? '请选择题目' : '等待画手选词...')}
+           {gameState.status === 'DRAWING' && (isDrawer ? `题目: ${gameState.currentWord}` : '猜猜他在画什么?')}
+        </div>
+
+        {/* 等待列表 */}
+        {gameState.status === 'LOBBY' && (
+          <div className="absolute inset-0 top-10 bg-white/95 z-20 p-6 flex flex-col">
+             <div className="flex-1 overflow-auto space-y-2">
+                {gameState.players.map((p, i) => (
+                  <div key={i} className="flex justify-between border p-2 rounded bg-white items-center">
+                    <span className="font-bold">{p.name}</span>
+                    {p.isHost && <span className="bg-yellow-200 text-xs px-2 rounded">房主</span>}
+                  </div>
+                ))}
+             </div>
+             {user?.isHost ? 
+               <button onClick={hostStartGame} className="w-full bg-green-500 text-white py-3 rounded-xl font-bold mt-4">开始游戏</button> :
+               <p className="text-center text-gray-500 mt-4 animate-pulse">等待房主开始...</p>
+             }
+          </div>
+        )}
+
+        {/* 选词遮罩 */}
+        {gameState.status === 'SELECTING' && isDrawer && (
+          <div className="absolute inset-0 top-10 bg-black/80 z-20 p-6 flex flex-col justify-center">
+             <h3 className="text-white text-xl font-bold mb-4 text-center">选择一个词语</h3>
+             <div className="grid grid-cols-2 gap-4">
+               {[WORDS[Math.floor(Math.random()*WORDS.length)], WORDS[Math.floor(Math.random()*WORDS.length)]].map((w, i) => (
+                 <button key={i} onClick={() => user?.isHost ? hostSelectWord(w) : guestSendMessage(w /* 逻辑上不可能，占位 */)} 
+                         onMouseDown={() => user?.isHost && hostSelectWord(w)}
+                         className="bg-white py-4 rounded text-xl font-bold hover:bg-gray-200">{w}</button>
+               ))}
+             </div>
+          </div>
+        )}
+
+        {/* 画板 */}
+        <div className="w-full aspect-square bg-white relative">
+           <canvas 
+             ref={canvasRef}
+             className="w-full h-full touch-none cursor-crosshair"
+             onMouseDown={startDraw} onMouseMove={moveDraw} onMouseUp={endDraw} onMouseLeave={endDraw}
+             onTouchStart={startDraw} onTouchMove={moveDraw} onTouchEnd={endDraw}
+           />
+        </div>
+
+        {/* 工具栏 */}
+        {isDrawer && gameState.status === 'DRAWING' && (
+          <div className="bg-gray-100 p-2 flex gap-2 overflow-x-auto shrink-0 border-b">
+             {COLORS.map(c => <button key={c} onClick={() => setSelectedColor(c)} className={`w-6 h-6 rounded-full border-2 ${selectedColor===c?'border-black':'border-transparent'}`} style={{backgroundColor: c}}/>)}
+             <div className="w-px bg-gray-300 mx-1"></div>
+             <button onClick={() => setSelectedColor('#ffffff')} className="p-1 bg-white rounded border"><Eraser size={16}/></button>
+             {user?.isHost && <button onClick={hostClearCanvas} className="p-1 bg-red-100 text-red-500 rounded border"><Trash2 size={16}/></button>}
+          </div>
+        )}
+
+        {/* 聊天区 */}
+        <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-gray-50 min-h-0">
+           {gameState.messages.map((m, i) => (
+             <div key={i} className={`text-sm ${m.type==='system'?'text-center text-gray-400 text-xs':m.type==='correct'?'text-center text-green-600 font-bold':''}`}>
+                {m.type==='chat' && <span className="font-bold text-gray-700">{m.sender}: </span>}
+                {m.text}
+             </div>
+           ))}
+           <div ref={chatEndRef}/>
+        </div>
+
+        {/* 输入框 */}
+        {!isDrawer && gameState.status === 'DRAWING' && (
+          <div className="p-2 bg-white border-t flex gap-2 shrink-0">
+             <input value={inputGuess} onChange={e => setInputGuess(e.target.value)} onKeyDown={e => e.key==='Enter'&&handleInputSubmit()} className="flex-1 border rounded-full px-3" placeholder="输入答案..." />
+             <button onClick={handleInputSubmit} className="bg-blue-500 text-white p-2 rounded-full"><Send size={18}/></button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+import React, { useState, useEffect, useRef } from 'react';
+import Peer, { DataConnection } from 'peerjs'; // 需要安装: npm install peerjs
+import { Palette, Trash2, Send, Copy, User, Eraser, Play, CheckCircle, AlertTriangle, Loader2, Wifi, WifiOff, Server, MonitorSmartphone } from 'lucide-react';
+
+// --- 常量与配置 ---
+// 使用国内友好的 STUN 服务器加速 P2P 连接
+const ICE_SERVERS = [
+  { urls: 'stun:stun.qq.com:3478' },
+  { urls: 'stun:stun.miwifi.com:3478' },
+  { urls: 'stun:stun.l.google.com:19302' } // 备用
+];
+
+const PEER_ID_PREFIX = 'dg-game-v1-'; // 防止 ID 冲突的前缀
+
+const WORDS = ["熊猫", "火锅", "奶茶", "高铁", "手机", "电脑", "孙悟空", "月饼", "长城", "饺子", "足球", "外卖"];
+const COLORS = ['#000000', '#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7', '#ffffff'];
+const LINE_WIDTHS = [2, 5, 10];
+
+// --- 类型定义 ---
+type Point = { x: number; y: number };
+type Line = { points: Point[]; color: string; width: number };
+type Player = { uid: string; name: string; score: number; isHost: boolean };
+type Message = { sender: string; text: string; type: 'chat' | 'system' | 'correct' };
+
+type GameState = {
+  status: 'LOBBY' | 'SELECTING' | 'DRAWING' | 'ENDED';
+  players: Player[];
+  currentDrawerIndex: number;
+  currentWord: string;
+  messages: Message[];
+  lines: Line[]; // P2P 模式下，画面也是状态的一部分，由房主统一分发
+  version: number;
+};
+
+// 初始状态
+const INITIAL_STATE: GameState = {
+  status: 'LOBBY',
+  players: [],
+  currentDrawerIndex: 0,
+  currentWord: '',
+  messages: [],
+  lines: [],
+  version: 0
+};
+
+// --- 主组件 ---
+export default function DrawAndGuessApp() {
+  // 基础状态
+  const [view, setView] = useState<'LOGIN' | 'LOBBY' | 'GAME'>('LOGIN');
+  const [user, setUser] = useState<Player | null>(null);
+  const [username, setUsername] = useState('');
+  const [roomId, setRoomId] = useState('');
+  
+  // P2P 状态
+  const [peer, setPeer] = useState<Peer | null>(null);
+  const [connections, setConnections] = useState<DataConnection[]>([]); // 仅房主使用：存储所有连接进来的玩家
+  const [hostConn, setHostConn] = useState<DataConnection | null>(null); // 仅玩家使用：存储连向房主的连接
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectError, setConnectError] = useState('');
+
+  // 游戏同步数据 (本地渲染用)
+  const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
+  
+  // 本地交互状态
+  const [currentLine, setCurrentLine] = useState<Line | null>(null);
+  const [selectedColor, setSelectedColor] = useState('#000000');
+  const [selectedWidth, setSelectedWidth] = useState(5);
+  const [inputGuess, setInputGuess] = useState('');
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  
+  // 房主专用：保存最新状态的 Ref，用于在收到消息时获取最新状态进行更新
+  // (React 的 state 在回调闭包中可能是旧的，所以用 Ref 辅助)
+  const gameStateRef = useRef<GameState>(INITIAL_STATE);
+
+  // 同步 Ref 和 State
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  // --- 1. P2P 连接逻辑 ---
+
+  // 初始化 Peer (当进入大厅并点击创建/加入时触发)
+  const initPeer = (customId?: string) => {
+    const newPeer = new Peer(customId, {
+      config: { iceServers: ICE_SERVERS },
+      debug: 1
+    });
+
+    newPeer.on('open', (id) => {
+      console.log('My Peer ID is: ' + id);
+      setIsConnected(true);
+      setConnectError('');
+    });
+
+    newPeer.on('error', (err) => {
+      console.error('Peer Error:', err);
+      setIsConnected(false);
+      if (err.type === 'unavailable-id') {
+        setConnectError('房间号已被占用，请换一个');
+        setView('LOBBY');
+      } else if (err.type === 'peer-unavailable') {
+        setConnectError('找不到房间，房主可能离线或房间号错误');
+        setView('LOBBY');
+      } else {
+        setConnectError('连接错误: ' + err.type);
+      }
+    });
+
+    return newPeer;
+  };
+
+  // --- 房主逻辑 (Host Logic) ---
+  const createRoom = () => {
+    if (!username || !roomId) return;
+    const fullRoomId = PEER_ID_PREFIX + roomId;
+    
+    // 1. 初始化房主 Peer，强制使用房间号作为 ID
+    const newPeer = initPeer(fullRoomId);
+    setPeer(newPeer);
+
+    const me: Player = { uid: fullRoomId, name: username, score: 0, isHost: true };
+    setUser(me);
+    
+    // 初始化游戏状态
+    const initialState = {
+      ...INITIAL_STATE,
+      players: [me],
+      messages: [{ sender: '系统', text: `房间 ${roomId} 创建成功！你是房主`, type: 'system' } as Message]
+    };
+    setGameState(initialState);
+
+    // 2. 监听玩家连接
+    newPeer.on('connection', (conn) => {
+      console.log('新玩家连接:', conn.peer);
+      
+      conn.on('open', () => {
+        // 保存连接
+        setConnections(prev => [...prev, conn]);
+        
+        // 发送当前完整状态给新玩家
+        conn.send({ type: 'STATE_SYNC', state: gameStateRef.current });
+      });
+
+      conn.on('data', (data: any) => {
+        handleHostReceiveData(data, conn);
+      });
+
+      conn.on('close', () => {
+        // 玩家断开，从列表移除
+        setConnections(prev => prev.filter(c => c.peer !== conn.peer));
+        // 更新游戏状态中的玩家列表
+        const newState = {
+           ...gameStateRef.current,
+           players: gameStateRef.current.players.filter(p => !p.uid.includes(conn.peer)) // 简化匹配
+        };
+        updateAndBroadcastState(newState);
+      });
+    });
+
+    setView('GAME');
+  };
+
+  // 房主处理接收到的数据
+  const handleHostReceiveData = (data: any, senderConn: DataConnection) => {
+    const currentState = gameStateRef.current;
+
+    if (data.type === 'PLAYER_JOIN') {
+      // 玩家申请加入
+      const newPlayer = { ...data.player, uid: senderConn.peer, isHost: false };
+      const newState = {
+        ...currentState,
+        players: [...currentState.players, newPlayer],
+        messages: [...currentState.messages, { sender: '系统', text: `${newPlayer.name} 加入了游戏`, type: 'system' } as Message]
+      };
+      updateAndBroadcastState(newState);
+    } 
+    else if (data.type === 'DRAW_LINE') {
+      // 玩家画线
+      const newState = {
+        ...currentState,
+        lines: [...currentState.lines, data.line]
+      };
+      // 这里不重新广播所有 Lines，优化点：只广播增量，但为了简单，这里广播全量
+      // 实际优化：房主本地更新 State，并向所有人转发这条线
+      setGameState(newState); 
+      broadcast({ type: 'DRAW_ACTION', line: data.line, sender: senderConn.peer });
+    }
+    else if (data.type === 'CHAT_MESSAGE') {
+      // 玩家发言/猜题
+      const msg = data.message;
+      const isDrawing = currentState.status === 'DRAWING';
+      const isCorrect = isDrawing && msg.trim() === currentState.currentWord;
+
+      if (isCorrect) {
+        // 猜对了
+        const drawerId = currentState.players[currentState.currentDrawerIndex].uid;
+        const guesserId = senderConn.peer; // 使用 connection id 作为 uid 匹配
+
+        const updatedPlayers = currentState.players.map(p => {
+          if (p.uid === guesserId) return { ...p, score: p.score + 10 };
+          if (p.uid === drawerId) return { ...p, score: p.score + 5 };
+          return p;
+        });
+
+        // 结算并切到下一轮
+        const nextIndex = (currentState.currentDrawerIndex + 1) % currentState.players.length;
+        const newState = {
+          ...currentState,
+          players: updatedPlayers,
+          status: 'SELECTING',
+          currentDrawerIndex: nextIndex,
+          lines: [], // 清空画布
+          messages: [...currentState.messages, { sender: '系统', text: `${data.senderName} 猜对了！答案是 ${currentState.currentWord}`, type: 'correct' } as Message]
+        };
+        // 这里必须转换类型为字面量以匹配 GameState
+        updateAndBroadcastState(newState as GameState);
+
+      } else {
+        // 普通聊天
+        const newState = {
+          ...currentState,
+          messages: [...currentState.messages, { sender: data.senderName, text: msg, type: 'chat' } as Message]
+        };
+        updateAndBroadcastState(newState);
+      }
+    }
+  };
+
+  // 房主广播数据
+  const broadcast = (payload: any) => {
+    connections.forEach(conn => {
+      if (conn.open) conn.send(payload);
+    });
+  };
+
+  // 房主更新状态并广播
+  const updateAndBroadcastState = (newState: GameState) => {
+    setGameState(newState);
+    broadcast({ type: 'STATE_SYNC', state: newState });
+  };
+
+
+  // --- 玩家逻辑 (Guest Logic) ---
+  const joinRoom = () => {
+    if (!username || !roomId) return;
+    
+    // 1. 初始化玩家 Peer (随机 ID)
+    const newPeer = initPeer();
+    setPeer(newPeer);
+
+    const me: Player = { uid: 'temp', name: username, score: 0, isHost: false }; // uid 会在连上后被房主修正
+    setUser(me);
+
+    // 2. 连接房主
+    const hostId = PEER_ID_PREFIX + roomId;
+    const conn = newPeer.connect(hostId);
+    
+    conn.on('open', () => {
+      console.log('已连接到房主');
+      setHostConn(conn);
+      setIsConnected(true);
+      // 发送加入请求
+      conn.send({ type: 'PLAYER_JOIN', player: me });
+    });
+
+    conn.on('data', (data: any) => {
+      if (data.type === 'STATE_SYNC') {
+        setGameState(data.state);
+        // 自动滚动聊天
+        if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      } 
+      else if (data.type === 'DRAW_ACTION') {
+        // 收到增量画线
+        setGameState(prev => ({
+          ...prev,
+          lines: [...prev.lines, data.line]
+        }));
+      }
+    });
+
+    conn.on('close', () => {
+      alert("与房主断开连接（房主可能退出了）");
+      setView('LOBBY');
+    });
+
+    conn.on('error', (err) => {
+      console.error("连接房主失败", err);
+      setConnectError("无法连接房主，请检查房间号");
+    });
+
+    setView('GAME');
+  };
+
+  const guestSendDraw = (line: Line) => {
+    if (hostConn && hostConn.open) {
+      hostConn.send({ type: 'DRAW_LINE', line });
+    }
+  };
+
+  const guestSendMessage = (text: string) => {
+    if (hostConn && hostConn.open) {
+      hostConn.send({ type: 'CHAT_MESSAGE', message: text, senderName: username });
+    }
+  };
+
+
+  // --- 房主操作逻辑 ---
+  const hostStartGame = () => {
+    const newState: GameState = {
+      ...gameStateRef.current,
+      status: 'SELECTING',
+      currentDrawerIndex: 0,
+      lines: [],
+      messages: [...gameStateRef.current.messages, { sender: '系统', text: '游戏开始！', type: 'system' }]
+    };
+    updateAndBroadcastState(newState);
+  };
+
+  const hostSelectWord = (word: string) => {
+    const newState: GameState = {
+      ...gameStateRef.current,
+      status: 'DRAWING',
+      currentWord: word,
+      lines: [],
+      messages: [...gameStateRef.current.messages, { sender: '系统', text: '画手已选题，请作画！', type: 'system' }]
+    };
+    updateAndBroadcastState(newState);
+  };
+
+  const hostClearCanvas = () => {
+    const newState = { ...gameStateRef.current, lines: [] };
+    updateAndBroadcastState(newState);
+  };
+
+
+  // --- 通用交互 ---
+  
+  // 发送消息/猜题
+  const handleInputSubmit = () => {
+    if (!inputGuess.trim()) return;
+    
+    if (user?.isHost) {
+      // 房主自己就是服务器，直接走房主逻辑
+      // 模拟一个伪造的 connection 对象传给自己
+      handleHostReceiveData(
+        { type: 'CHAT_MESSAGE', message: inputGuess, senderName: user.name }, 
+        { peer: user.uid } as DataConnection
+      );
+    } else {
+      guestSendMessage(inputGuess);
+    }
+    setInputGuess('');
+  };
+
+  // --- 绘图与 Canvas (通用) ---
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // 适配
+    const parent = canvas.parentElement;
+    if (parent) {
+       canvas.width = parent.clientWidth;
+       canvas.height = parent.clientWidth;
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // 绘制所有线条
+    gameState.lines.forEach(l => {
+      ctx.beginPath();
+      ctx.strokeStyle = l.color;
+      ctx.lineWidth = l.width;
+      ctx.moveTo(l.points[0].x, l.points[0].y);
+      for(let i=1; i<l.points.length; i++) ctx.lineTo(l.points[i].x, l.points[i].y);
+      ctx.stroke();
+    });
+    
+    // 绘制当前正在画的
+    if (currentLine) {
+      ctx.beginPath();
+      ctx.strokeStyle = currentLine.color;
+      ctx.lineWidth = currentLine.width;
+      ctx.moveTo(currentLine.points[0].x, currentLine.points[0].y);
+      for(let i=1; i<currentLine.points.length; i++) ctx.lineTo(currentLine.points[i].x, currentLine.points[i].y);
+      ctx.stroke();
+    }
+  }, [gameState.lines, currentLine, view]);
+
+  // 鼠标事件
+  const getPos = (e: any) => {
+    const r = canvasRef.current!.getBoundingClientRect();
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const y = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return { x, y };
+  };
+
+  const startDraw = (e: any) => {
+    if (gameState.status !== 'DRAWING') return;
+    // 检查是否轮到自己
+    const currentDrawer = gameState.players[gameState.currentDrawerIndex];
+    // 房主判断 uid 完全匹配，玩家判断是否是自己 (玩家存储的 uid 在连接后可能不一致，这里简单判断 name，严谨应用需改)
+    // 修正：玩家连接成功后，房主 State 里的 uid 是玩家的 PeerID。玩家自己的 user.uid 只是 'temp'。
+    // 所以逻辑是：如果我是房主，uid === currentDrawer.uid。如果我是玩家，hostConn.id === currentDrawer.uid? 不对。
+    // 简化逻辑：如果是房主，判断 uid。如果是玩家，判断 currentDrawer.uid 是否等于 myPeerId。
+    
+    const myId = user?.isHost ? user.uid : peer?.id;
+    if (currentDrawer?.uid !== myId) return;
+
+    const {x, y} = getPos(e);
+    setCurrentLine({ points: [{x, y}], color: selectedColor, width: selectedWidth });
+  };
+
+  const moveDraw = (e: any) => {
+    if (!currentLine) return;
+    const {x, y} = getPos(e);
+    setCurrentLine(prev => prev ? { ...prev, points: [...prev.points, {x, y}] } : null);
+  };
+
+  const endDraw = () => {
+    if (!currentLine) return;
+    // 提交线条
+    if (user?.isHost) {
+      // 房主直接更新
+      const newState = { ...gameStateRef.current, lines: [...gameStateRef.current.lines, currentLine] };
+      updateAndBroadcastState(newState);
+    } else {
+      // 玩家发送给房主
+      guestSendDraw(currentLine);
+      // 本地乐观更新 (为了流畅，但这会造成闪烁如果网络慢，先不做，完全依赖回传)
+    }
+    setCurrentLine(null);
+  };
+
+
+  // --- 视图 ---
+
+  if (view === 'LOGIN') {
+    return (
+      <div className="min-h-screen bg-indigo-50 flex flex-col items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm border-4 border-indigo-400">
+          <h1 className="text-3xl font-bold text-center text-indigo-600 mb-6 flex items-center justify-center gap-2"><Palette/> 你画我猜 <span className="text-xs bg-indigo-100 px-2 rounded">P2P版</span></h1>
+          <div className="space-y-4">
+            <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full border-2 p-3 rounded-xl" placeholder="请输入昵称" maxLength={8} />
+            <button onClick={() => username && setView('LOBBY')} className="w-full bg-indigo-500 text-white font-bold py-3 rounded-xl shadow active:scale-95">开始</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'LOBBY') {
+    return (
+      <div className="min-h-screen bg-blue-50 flex flex-col items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm border-4 border-blue-400">
+          <h2 className="text-2xl font-bold text-gray-800 mb-2">游戏大厅</h2>
+          {connectError && <div className="mb-4 p-2 bg-red-100 text-red-600 text-xs rounded flex items-center gap-1"><AlertTriangle size={12}/> {connectError}</div>}
+          
+          <div className="space-y-4">
+            <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+              <h3 className="font-bold text-blue-800 mb-2 flex items-center gap-2"><Server size={16}/> 我当房主</h3>
+              <div className="flex gap-2">
+                <input type="number" value={roomId} onChange={e => setRoomId(e.target.value)} placeholder="设置房间号 (如 666)" className="flex-1 border p-2 rounded" />
+                <button onClick={createRoom} className="bg-blue-600 text-white px-4 rounded font-bold text-sm">创建</button>
+              </div>
+            </div>
+
+            <div className="p-4 bg-green-50 rounded-xl border border-green-100">
+              <h3 className="font-bold text-green-800 mb-2 flex items-center gap-2"><MonitorSmartphone size={16}/> 我是玩家</h3>
+              <div className="flex gap-2">
+                <input type="number" value={roomId} onChange={e => setRoomId(e.target.value)} placeholder="输入房间号" className="flex-1 border p-2 rounded" />
+                <button onClick={joinRoom} className="bg-green-600 text-white px-4 rounded font-bold text-sm">加入</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 游戏界面
+  const isDrawer = gameState.players[gameState.currentDrawerIndex]?.uid === (user?.isHost ? user.uid : peer?.id);
+  
+  return (
+    <div className="min-h-screen bg-gray-100 flex flex-col max-w-md mx-auto shadow-2xl h-screen">
+      <header className="bg-white p-2 shadow z-10 flex justify-between items-center shrink-0">
+        <div className="flex flex-col"><span className="text-xs text-gray-500">房间号</span><b className="text-blue-600">{roomId}</b></div>
+        <div className="flex items-center gap-2">
+           <span className={`flex items-center text-xs ${isConnected?'text-green-500':'text-red-500'}`}>{isConnected ? <Wifi size={14}/> : <WifiOff size={14}/>} {user?.isHost ? '房主' : '玩家'}</span>
+           <button onClick={() => window.location.reload()} className="text-red-500 text-sm">退出</button>
+        </div>
+      </header>
+
+      <div className="flex-1 flex flex-col relative overflow-hidden">
+        {/* 顶部状态条 */}
+        <div className="bg-yellow-100 p-2 text-center text-yellow-800 text-sm font-bold">
+           {gameState.status === 'LOBBY' && `等待玩家... (${gameState.players.length}人)`}
+           {gameState.status === 'SELECTING' && (isDrawer ? '请选择题目' : '等待画手选词...')}
+           {gameState.status === 'DRAWING' && (isDrawer ? `题目: ${gameState.currentWord}` : '猜猜他在画什么?')}
+        </div>
+
+        {/* 等待列表 */}
+        {gameState.status === 'LOBBY' && (
+          <div className="absolute inset-0 top-10 bg-white/95 z-20 p-6 flex flex-col">
+             <div className="flex-1 overflow-auto space-y-2">
+                {gameState.players.map((p, i) => (
+                  <div key={i} className="flex justify-between border p-2 rounded bg-white items-center">
+                    <span className="font-bold">{p.name}</span>
+                    {p.isHost && <span className="bg-yellow-200 text-xs px-2 rounded">房主</span>}
+                  </div>
+                ))}
+             </div>
+             {user?.isHost ? 
+               <button onClick={hostStartGame} className="w-full bg-green-500 text-white py-3 rounded-xl font-bold mt-4">开始游戏</button> :
+               <p className="text-center text-gray-500 mt-4 animate-pulse">等待房主开始...</p>
+             }
+          </div>
+        )}
+
+        {/* 选词遮罩 */}
+        {gameState.status === 'SELECTING' && isDrawer && (
+          <div className="absolute inset-0 top-10 bg-black/80 z-20 p-6 flex flex-col justify-center">
+             <h3 className="text-white text-xl font-bold mb-4 text-center">选择一个词语</h3>
+             <div className="grid grid-cols-2 gap-4">
+               {[WORDS[Math.floor(Math.random()*WORDS.length)], WORDS[Math.floor(Math.random()*WORDS.length)]].map((w, i) => (
+                 <button key={i} onClick={() => user?.isHost ? hostSelectWord(w) : guestSendMessage(w /* 逻辑上不可能，占位 */)} 
+                         onMouseDown={() => user?.isHost && hostSelectWord(w)}
+                         className="bg-white py-4 rounded text-xl font-bold hover:bg-gray-200">{w}</button>
+               ))}
+             </div>
+          </div>
+        )}
+
+        {/* 画板 */}
+        <div className="w-full aspect-square bg-white relative">
+           <canvas 
+             ref={canvasRef}
+             className="w-full h-full touch-none cursor-crosshair"
+             onMouseDown={startDraw} onMouseMove={moveDraw} onMouseUp={endDraw} onMouseLeave={endDraw}
+             onTouchStart={startDraw} onTouchMove={moveDraw} onTouchEnd={endDraw}
+           />
+        </div>
+
+        {/* 工具栏 */}
+        {isDrawer && gameState.status === 'DRAWING' && (
+          <div className="bg-gray-100 p-2 flex gap-2 overflow-x-auto shrink-0 border-b">
+             {COLORS.map(c => <button key={c} onClick={() => setSelectedColor(c)} className={`w-6 h-6 rounded-full border-2 ${selectedColor===c?'border-black':'border-transparent'}`} style={{backgroundColor: c}}/>)}
+             <div className="w-px bg-gray-300 mx-1"></div>
+             <button onClick={() => setSelectedColor('#ffffff')} className="p-1 bg-white rounded border"><Eraser size={16}/></button>
+             {user?.isHost && <button onClick={hostClearCanvas} className="p-1 bg-red-100 text-red-500 rounded border"><Trash2 size={16}/></button>}
+          </div>
+        )}
+
+        {/* 聊天区 */}
+        <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-gray-50 min-h-0">
+           {gameState.messages.map((m, i) => (
+             <div key={i} className={`text-sm ${m.type==='system'?'text-center text-gray-400 text-xs':m.type==='correct'?'text-center text-green-600 font-bold':''}`}>
+                {m.type==='chat' && <span className="font-bold text-gray-700">{m.sender}: </span>}
+                {m.text}
+             </div>
+           ))}
+           <div ref={chatEndRef}/>
+        </div>
+
+        {/* 输入框 */}
+        {!isDrawer && gameState.status === 'DRAWING' && (
+          <div className="p-2 bg-white border-t flex gap-2 shrink-0">
+             <input value={inputGuess} onChange={e => setInputGuess(e.target.value)} onKeyDown={e => e.key==='Enter'&&handleInputSubmit()} className="flex-1 border rounded-full px-3" placeholder="输入答案..." />
+             <button onClick={handleInputSubmit} className="bg-blue-500 text-white p-2 rounded-full"><Send size={18}/></button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
