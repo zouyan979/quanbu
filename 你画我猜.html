@@ -1,0 +1,636 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  onAuthStateChanged,
+  signInWithCustomToken
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  onSnapshot, 
+  updateDoc, 
+  arrayUnion, 
+  increment,
+  getDoc
+} from 'firebase/firestore';
+import { Palette, Trash2, Send, Copy, User, Eraser, Play, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+
+// --- Safe Initialization ---
+let app, auth, db;
+let initError = null;
+
+try {
+  // Check if config exists to prevent immediate crash
+  if (typeof __firebase_config !== 'undefined') {
+    const firebaseConfig = JSON.parse(__firebase_config);
+    // Prevent double initialization
+    app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+    auth = getAuth(app);
+    db = getFirestore(app);
+  } else {
+    throw new Error("Firebase config not found");
+  }
+} catch (e) {
+  console.error("Firebase init error:", e);
+  initError = e.message;
+}
+
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- Constants & Types ---
+const WORDS = [
+  "苹果", "香蕉", "电脑", "手机", "汽车", "飞机", "猫", "狗", 
+  "太阳", "月亮", "雨伞", "雪人", "房子", "树", "花", "眼镜",
+  "手表", "鞋子", "篮球", "足球", "熊猫", "老虎", "汉堡", "薯条"
+];
+
+const COLORS = ['#000000', '#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7', '#ffffff'];
+const LINE_WIDTHS = [2, 5, 10];
+
+type Point = { x: number; y: number };
+type Line = { points: Point[]; color: string; width: number };
+type Player = { uid: string; name: string; score: number; isHost: boolean };
+type Message = { sender: string; text: string; type: 'chat' | 'system' | 'correct' };
+
+// Game States
+type GameStatus = 'LOBBY' | 'SELECTING' | 'DRAWING' | 'ENDED';
+
+// --- Main Component ---
+export default function DrawAndGuessApp() {
+  // Auth State
+  const [user, setUser] = useState<any>(null);
+  const [username, setUsername] = useState('');
+  
+  // App Flow State
+  const [view, setView] = useState<'LOGIN' | 'LOBBY' | 'GAME'>('LOGIN');
+  const [roomId, setRoomId] = useState('');
+  
+  // Game Data State (Synced)
+  const [roomData, setRoomData] = useState<any>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  
+  // Local Game State
+  const [currentLine, setCurrentLine] = useState<Line | null>(null);
+  const [selectedColor, setSelectedColor] = useState('#000000');
+  const [selectedWidth, setSelectedWidth] = useState(5);
+  const [inputGuess, setInputGuess] = useState('');
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // --- 0. Error Guard ---
+  if (initError) {
+    return (
+      <div className="min-h-screen bg-red-50 flex flex-col items-center justify-center p-6 text-center text-red-800">
+        <AlertTriangle size={48} className="mb-4 text-red-500" />
+        <h2 className="text-xl font-bold mb-2">应用启动失败</h2>
+        <p className="text-sm opacity-80 mb-4">无法连接到数据库服务，请检查环境配置。</p>
+        <code className="bg-red-100 p-2 rounded text-xs block max-w-full overflow-auto">
+          {initError}
+        </code>
+      </div>
+    );
+  }
+
+  // --- 1. Authentication ---
+  useEffect(() => {
+    if (!auth) return;
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error("Auth error:", e);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      if (u) setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- 2. Room Sync Listener ---
+  useEffect(() => {
+    if (!user || !roomId || view !== 'GAME' || !db) return;
+
+    // FIX: Added 'rooms' collection segment to make path length even (6 segments)
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`);
+
+    const unsubscribe = onSnapshot(roomRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setRoomData(data);
+        setMessages(data.messages || []);
+        
+        // Auto-scroll chat
+        if (chatEndRef.current) {
+          chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+      } else {
+        alert("房间不存在或已解散");
+        setView('LOBBY');
+      }
+    }, (error) => {
+      console.error("Error syncing room:", error);
+      // Optional: Handle permission errors or other sync issues
+    });
+
+    return () => unsubscribe();
+  }, [user, roomId, view]);
+
+  // --- 3. Canvas Rendering Logic ---
+  const drawLine = (ctx: CanvasRenderingContext2D, line: Line) => {
+    if (line.points.length < 2) return;
+    ctx.beginPath();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = line.color;
+    ctx.lineWidth = line.width;
+    ctx.moveTo(line.points[0].x, line.points[0].y);
+    for (let i = 1; i < line.points.length; i++) {
+      ctx.lineTo(line.points[i].x, line.points[i].y);
+    }
+    ctx.stroke();
+  };
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !roomData) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Responsive Canvas Sizing
+    const parent = canvas.parentElement;
+    if (parent) {
+      // Force a redraw on resize
+      const size = parent.clientWidth;
+      if (canvas.width !== size || canvas.height !== size) {
+         canvas.width = size;
+         canvas.height = size; 
+      }
+    }
+
+    // Clear and Redraw
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw all synced lines
+    if (roomData.lines) {
+      roomData.lines.forEach((line: Line) => drawLine(ctx, line));
+    }
+    
+    // Draw current line being drawn (local feedback for drawer)
+    if (currentLine) {
+      drawLine(ctx, currentLine);
+    }
+  }, [roomData, currentLine, view]); 
+
+  // --- 4. User Actions ---
+
+  const handleCreateRoom = async () => {
+    if (!user || !username || !db) return;
+    try {
+      const newRoomId = Math.floor(1000 + Math.random() * 9000).toString();
+      // FIX: Added 'rooms' collection segment
+      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${newRoomId}`);
+      
+      const initialData = {
+        roomId: newRoomId,
+        status: 'LOBBY', 
+        round: 1,
+        totalRounds: 3,
+        currentDrawerIndex: 0,
+        currentWord: '',
+        lines: [], 
+        players: [{
+          uid: user.uid,
+          name: username,
+          score: 0,
+          isHost: true
+        }],
+        messages: [{ sender: '系统', text: `欢迎来到房间 ${newRoomId}`, type: 'system' }]
+      };
+
+      await setDoc(roomRef, initialData);
+      setRoomId(newRoomId);
+      setView('GAME');
+    } catch (e) {
+      console.error("Create room error:", e);
+      alert("创建房间失败，请重试");
+    }
+  };
+
+  const handleJoinRoom = async () => {
+    if (!user || !username || !roomId || !db) return;
+    try {
+      // FIX: Added 'rooms' collection segment
+      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`);
+      const snap = await getDoc(roomRef);
+
+      if (snap.exists()) {
+        const data = snap.data();
+        const existingPlayer = data.players.find((p: Player) => p.uid === user.uid);
+        
+        if (!existingPlayer) {
+          await updateDoc(roomRef, {
+            players: arrayUnion({
+              uid: user.uid,
+              name: username,
+              score: 0,
+              isHost: false
+            }),
+            messages: arrayUnion({ sender: '系统', text: `${username} 加入了游戏`, type: 'system' })
+          });
+        }
+        setView('GAME');
+      } else {
+        alert("房间不存在");
+      }
+    } catch (e) {
+      console.error("Join room error:", e);
+      alert("加入房间失败，请检查房间号");
+    }
+  };
+
+  const startGame = async () => {
+    if (!roomData || !db) return;
+    // FIX: Added 'rooms' collection segment
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
+      status: 'SELECTING',
+      currentDrawerIndex: 0,
+      round: 1,
+      lines: [],
+      messages: arrayUnion({ sender: '系统', text: `游戏开始！第 1 轮`, type: 'system' })
+    });
+  };
+
+  const selectWord = async (word: string) => {
+    if (!db) return;
+    // FIX: Added 'rooms' collection segment
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
+      currentWord: word,
+      status: 'DRAWING',
+      lines: [],
+      messages: arrayUnion({ sender: '系统', text: `画手已选词，请开始作画/猜题！`, type: 'system' })
+    });
+  };
+
+  const submitGuess = async () => {
+    if (!inputGuess.trim() || !db) return;
+    
+    const isCorrect = inputGuess.trim() === roomData.currentWord;
+    // FIX: Added 'rooms' collection segment
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`);
+
+    if (isCorrect && roomData.status === 'DRAWING') {
+      const updatedPlayers = roomData.players.map((p: Player) => {
+        if (p.uid === user.uid) return { ...p, score: p.score + 10 }; 
+        if (p.uid === roomData.players[roomData.currentDrawerIndex].uid) return { ...p, score: p.score + 5 };
+        return p;
+      });
+
+      await updateDoc(roomRef, {
+        players: updatedPlayers,
+        messages: arrayUnion({ sender: username, text: `回答正确！答案是 ${roomData.currentWord}`, type: 'correct' }),
+        status: 'SELECTING',
+        currentDrawerIndex: (roomData.currentDrawerIndex + 1) % roomData.players.length,
+        lines: []
+      });
+    } else {
+      await updateDoc(roomRef, {
+        messages: arrayUnion({ sender: username, text: inputGuess, type: 'chat' })
+      });
+    }
+    setInputGuess('');
+  };
+
+  // --- 5. Drawing Event Handlers ---
+  const getCoordinates = (e: React.MouseEvent | React.TouchEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top
+    };
+  };
+
+  const handleDrawStart = (e: React.MouseEvent | React.TouchEvent) => {
+    if (roomData?.status !== 'DRAWING' || roomData.players[roomData.currentDrawerIndex].uid !== user.uid) return;
+    const { x, y } = getCoordinates(e);
+    setCurrentLine({ points: [{ x, y }], color: selectedColor, width: selectedWidth });
+  };
+
+  const handleDrawMove = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!currentLine) return;
+    const { x, y } = getCoordinates(e);
+    setCurrentLine(prev => prev ? { ...prev, points: [...prev.points, { x, y }] } : null);
+  };
+
+  const handleDrawEnd = async () => {
+    if (!currentLine || !db) return;
+    // FIX: Added 'rooms' collection segment
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
+      lines: arrayUnion(currentLine)
+    });
+    setCurrentLine(null);
+  };
+
+  const clearCanvas = async () => {
+    if (roomData.players[roomData.currentDrawerIndex].uid !== user.uid || !db) return;
+    // FIX: Added 'rooms' collection segment
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
+      lines: []
+    });
+  };
+
+  // --- Views ---
+
+  // 1. Login View
+  if (view === 'LOGIN') {
+    return (
+      <div className="min-h-screen w-full bg-yellow-50 flex flex-col items-center justify-center p-4 text-gray-900">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm border-4 border-yellow-400">
+          <h1 className="text-3xl font-bold text-center text-yellow-600 mb-6 flex items-center justify-center gap-2">
+            <Palette className="w-8 h-8" />
+            你画我猜
+          </h1>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-gray-700 mb-2 font-medium">请输入昵称</label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full border-2 border-gray-200 p-3 rounded-xl focus:outline-none focus:border-yellow-400 text-lg transition-colors text-gray-900 bg-white"
+                placeholder="例如: 画画小能手"
+                maxLength={8}
+              />
+            </div>
+            <button
+              onClick={() => username && setView('LOBBY')}
+              disabled={!username}
+              className="w-full bg-yellow-400 hover:bg-yellow-500 text-white font-bold py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-md active:transform active:scale-95"
+            >
+              进入大厅
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Lobby View
+  if (view === 'LOBBY') {
+    return (
+      <div className="min-h-screen w-full bg-blue-50 flex flex-col items-center justify-center p-4 text-gray-900">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm border-4 border-blue-400">
+          <div className="flex items-center justify-between mb-8">
+            <h2 className="text-2xl font-bold text-gray-800">游戏大厅</h2>
+            <div className="flex items-center gap-2 text-gray-600 bg-gray-100 px-3 py-1 rounded-full text-sm">
+              <User size={16} />
+              {username}
+            </div>
+          </div>
+          
+          <div className="space-y-4">
+            <button
+              onClick={handleCreateRoom}
+              className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95"
+            >
+              <Palette />
+              创建新房间
+            </button>
+            
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-gray-200"></div>
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-white text-gray-500">或者</span>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="number"
+                value={roomId}
+                onChange={(e) => setRoomId(e.target.value)}
+                placeholder="输入房间号"
+                className="flex-1 border-2 border-gray-200 p-3 rounded-xl focus:border-blue-400 outline-none text-center text-lg tracking-widest text-gray-900"
+              />
+              <button
+                onClick={handleJoinRoom}
+                className="bg-green-500 hover:bg-green-600 text-white font-bold px-6 rounded-xl shadow-md active:scale-95"
+              >
+                加入
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Game View
+  if (!roomData) return (
+    <div className="min-h-screen w-full bg-gray-50 flex items-center justify-center text-gray-600 gap-2">
+      <Loader2 className="animate-spin" /> 
+      <span>正在连接房间...</span>
+    </div>
+  );
+
+  const isDrawer = roomData.players[roomData.currentDrawerIndex]?.uid === user.uid;
+  const isHost = roomData.players[0]?.uid === user.uid;
+  const currentDrawerName = roomData.players[roomData.currentDrawerIndex]?.name;
+
+  return (
+    <div className="min-h-screen w-full bg-gray-50 flex flex-col max-w-md mx-auto shadow-2xl overflow-hidden text-gray-900">
+      {/* Header */}
+      <header className="bg-white p-3 shadow-sm z-10 flex justify-between items-center shrink-0">
+        <div className="flex flex-col">
+          <span className="text-xs text-gray-500">房间号</span>
+          <div className="flex items-center gap-1 font-mono font-bold text-lg text-blue-600 cursor-pointer" 
+               onClick={() => navigator.clipboard.writeText(roomId)}>
+            {roomId} <Copy size={14} />
+          </div>
+        </div>
+        <div className="flex-1 text-center px-2">
+          {roomData.status === 'LOBBY' ? (
+            <span className="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full text-sm font-bold whitespace-nowrap">等待开始</span>
+          ) : (
+            <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-bold block truncate">
+              {roomData.status === 'SELECTING' ? '选词中...' : isDrawer ? `题目: ${roomData.currentWord}` : '猜猜看!'}
+            </span>
+          )}
+        </div>
+        <button onClick={() => setView('LOBBY')} className="text-red-500 text-sm font-medium whitespace-nowrap">退出</button>
+      </header>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col relative overflow-hidden">
+        
+        {/* Waiting Lobby State */}
+        {roomData.status === 'LOBBY' && (
+          <div className="absolute inset-0 z-20 bg-white/95 flex flex-col items-center justify-center p-6 backdrop-blur-sm">
+            <h3 className="text-xl font-bold mb-4">等待玩家... ({roomData.players.length}人)</h3>
+            <div className="w-full space-y-2 mb-6 max-h-[50vh] overflow-y-auto">
+              {roomData.players.map((p: Player) => (
+                <div key={p.uid} className="flex justify-between items-center bg-white p-3 rounded-lg shadow-sm border">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold">
+                      {p.name[0]}
+                    </div>
+                    <span>{p.name}</span>
+                  </div>
+                  {p.isHost && <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded">房主</span>}
+                </div>
+              ))}
+            </div>
+            {isHost && (
+              <button 
+                onClick={startGame}
+                className="w-full bg-green-500 text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg animate-pulse"
+              >
+                <Play size={20} /> 开始游戏
+              </button>
+            )}
+            {!isHost && <p className="text-gray-500 animate-pulse text-center">房主正在配置游戏...</p>}
+          </div>
+        )}
+
+        {/* Word Selection State */}
+        {roomData.status === 'SELECTING' && isDrawer && (
+          <div className="absolute inset-0 z-20 bg-black/80 flex flex-col items-center justify-center p-6 text-white">
+            <h3 className="text-2xl font-bold mb-6">请选择一个题目</h3>
+            <div className="grid grid-cols-2 gap-4 w-full">
+              {[WORDS[Math.floor(Math.random()*WORDS.length)], 
+                WORDS[Math.floor(Math.random()*WORDS.length)], 
+                WORDS[Math.floor(Math.random()*WORDS.length)], 
+                WORDS[Math.floor(Math.random()*WORDS.length)]].map((w, i) => (
+                <button 
+                  key={i}
+                  onClick={() => selectWord(w)}
+                  className="bg-white/10 hover:bg-white/20 border-2 border-white/30 py-4 rounded-xl text-xl font-bold backdrop-blur-sm transition-all"
+                >
+                  {w}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Canvas Area */}
+        <div className="w-full bg-white relative shadow-inner shrink-0">
+          <canvas
+            ref={canvasRef}
+            className="w-full touch-none cursor-crosshair block"
+            onMouseDown={handleDrawStart}
+            onMouseMove={handleDrawMove}
+            onMouseUp={handleDrawEnd}
+            onMouseLeave={handleDrawEnd}
+            onTouchStart={handleDrawStart}
+            onTouchMove={handleDrawMove}
+            onTouchEnd={handleDrawEnd}
+            style={{ width: '100%', aspectRatio: '1/1' }}
+          />
+          {/* Overlay info if not drawing */}
+          {!isDrawer && roomData.status === 'SELECTING' && (
+            <div className="absolute inset-0 flex items-center justify-center bg-gray-100/50">
+              <span className="bg-white px-4 py-2 rounded-lg shadow text-gray-600 animate-bounce">
+                {currentDrawerName} 正在选词...
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Toolbar (Only for Drawer) */}
+        {isDrawer && roomData.status === 'DRAWING' && (
+          <div className="bg-gray-100 p-2 flex items-center justify-between border-b shrink-0">
+            <div className="flex gap-2 items-center">
+              {COLORS.map(c => (
+                <button
+                  key={c}
+                  onClick={() => setSelectedColor(c)}
+                  className={`w-6 h-6 rounded-full border-2 ${selectedColor === c ? 'border-gray-800 scale-110' : 'border-transparent'}`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+              <div className="w-px h-6 bg-gray-300 mx-1"></div>
+              {LINE_WIDTHS.map(w => (
+                <button
+                  key={w}
+                  onClick={() => setSelectedWidth(w)}
+                  className={`w-6 h-6 flex items-center justify-center rounded ${selectedWidth === w ? 'bg-gray-300' : ''}`}
+                >
+                  <div className="bg-black rounded-full" style={{ width: w, height: w }} />
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setSelectedColor('#ffffff')} className={`p-2 rounded hover:bg-gray-200 ${selectedColor === '#ffffff' ? 'bg-gray-300' : ''}`}>
+                <Eraser size={20} />
+              </button>
+              <button onClick={clearCanvas} className="p-2 rounded hover:bg-red-100 text-red-500">
+                <Trash2 size={20} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Chat & Messages - fills remaining space */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-gray-50 border-t min-h-0">
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`text-sm ${msg.type === 'system' ? 'text-center text-gray-400 text-xs my-2' : ''}`}>
+              {msg.type === 'system' ? (
+                 <span>- {msg.text} -</span>
+              ) : msg.type === 'correct' ? (
+                <div className="flex items-center gap-2 text-green-600 font-bold bg-green-50 p-2 rounded-lg justify-center">
+                   <CheckCircle size={14} /> {msg.text}
+                </div>
+              ) : (
+                <div className="flex gap-2 break-all">
+                  <span className="font-bold text-gray-700 whitespace-nowrap">{msg.sender}:</span>
+                  <span className="text-gray-900">{msg.text}</span>
+                </div>
+              )}
+            </div>
+          ))}
+          <div ref={chatEndRef} />
+        </div>
+
+        {/* Input Area (Only for Guessers) */}
+        {!isDrawer && roomData.status === 'DRAWING' && (
+          <div className="p-3 bg-white border-t flex gap-2 shrink-0 safe-area-bottom">
+            <input
+              type="text"
+              value={inputGuess}
+              onChange={(e) => setInputGuess(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submitGuess()}
+              placeholder="输入你的答案..."
+              className="flex-1 border border-gray-300 rounded-full px-4 py-2 focus:outline-none focus:border-blue-500 bg-white text-gray-900"
+            />
+            <button 
+              onClick={submitGuess}
+              className="bg-blue-500 text-white rounded-full p-2 hover:bg-blue-600 active:scale-95 transition-transform"
+            >
+              <Send size={20} />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
