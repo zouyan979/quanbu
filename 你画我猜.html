@@ -15,28 +15,59 @@ import {
   updateDoc, 
   arrayUnion, 
   increment,
-  getDoc
+  getDoc,
+  initializeFirestore
 } from 'firebase/firestore';
-import { Palette, Trash2, Send, Copy, User, Eraser, Play, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+import { Palette, Trash2, Send, Copy, User, Eraser, Play, CheckCircle, AlertTriangle, Loader2, Settings, Database } from 'lucide-react';
 
-// --- Safe Initialization ---
+// --- Safe Initialization & Configuration ---
 let app, auth, db;
-let initError = null;
+let globalInitError = null;
+
+// [DEPLOYMENT CONFIGURATION]
+// 🔴 已自动填入您的配置
+const myFirebaseConfig = {
+  apiKey: "AIzaSyCKpiMSPxU_fBJhN06-r3i5_mfHb_kX51U",
+  authDomain: "nihuawocai-8dfbd.firebaseapp.com",
+  projectId: "nihuawocai-8dfbd",
+  storageBucket: "nihuawocai-8dfbd.firebasestorage.app",
+  messagingSenderId: "775907764370",
+  appId: "1:775907764370:web:abe94bd8ea86e02b671e4b",
+  measurementId: "G-GFSC7HNH7D"
+};
 
 try {
-  // Check if config exists to prevent immediate crash
-  if (typeof __firebase_config !== 'undefined') {
-    const firebaseConfig = JSON.parse(__firebase_config);
-    // Prevent double initialization
-    app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-    auth = getAuth(app);
-    db = getFirestore(app);
-  } else {
-    throw new Error("Firebase config not found");
+  let configToUse;
+
+  // 1. 优先使用您手动填写的配置 (myFirebaseConfig)
+  if (myFirebaseConfig) {
+    configToUse = myFirebaseConfig;
+  } 
+  // 2. 如果您在预览环境，尝试使用内置配置 (仅供预览使用)
+  else if (typeof __firebase_config !== 'undefined') {
+    configToUse = JSON.parse(__firebase_config);
+  } 
+  // 3. 如果都没有，抛出错误提示用户填写
+  else {
+    throw new Error("请在代码第 33 行附近填写 'myFirebaseConfig' 才能启动游戏！");
   }
+
+  // Prevent double initialization
+  app = !getApps().length ? initializeApp(configToUse) : getApp();
+  auth = getAuth(app);
+  
+  // FIX: Try to initialize Firestore with settings to avoid "offline" issues in some environments
+  try {
+     // 尝试使用强制长轮询，这在某些受限网络环境更稳定
+     db = initializeFirestore(app, { experimentalForceLongPolling: true });
+  } catch (e) {
+     // 如果因为热重载导致已经初始化过，则直接获取现有实例
+     db = getFirestore(app);
+  }
+
 } catch (e) {
   console.error("Firebase init error:", e);
-  initError = e.message;
+  globalInitError = e.message;
 }
 
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -61,13 +92,17 @@ type GameStatus = 'LOBBY' | 'SELECTING' | 'DRAWING' | 'ENDED';
 
 // --- Main Component ---
 export default function DrawAndGuessApp() {
+  // 1. Hooks MUST be declared at the top level, BEFORE any return statements
   // Auth State
   const [user, setUser] = useState<any>(null);
   const [username, setUsername] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [dbError, setDbError] = useState<string | null>(null); // State for "offline" error
   
   // App Flow State
   const [view, setView] = useState<'LOGIN' | 'LOBBY' | 'GAME'>('LOGIN');
   const [roomId, setRoomId] = useState('');
+  const [loading, setLoading] = useState(false);
   
   // Game Data State (Synced)
   const [roomData, setRoomData] = useState<any>(null);
@@ -82,32 +117,30 @@ export default function DrawAndGuessApp() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // --- 0. Error Guard ---
-  if (initError) {
-    return (
-      <div className="min-h-screen bg-red-50 flex flex-col items-center justify-center p-6 text-center text-red-800">
-        <AlertTriangle size={48} className="mb-4 text-red-500" />
-        <h2 className="text-xl font-bold mb-2">应用启动失败</h2>
-        <p className="text-sm opacity-80 mb-4">无法连接到数据库服务，请检查环境配置。</p>
-        <code className="bg-red-100 p-2 rounded text-xs block max-w-full overflow-auto">
-          {initError}
-        </code>
-      </div>
-    );
-  }
-
-  // --- 1. Authentication ---
+  // --- Authentication Hook ---
   useEffect(() => {
     if (!auth) return;
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        const usingCustomConfig = !!myFirebaseConfig;
+        if (!usingCustomConfig && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(auth, __initial_auth_token);
         } else {
           await signInAnonymously(auth);
         }
-      } catch (e) {
+      } catch (e: any) {
         console.error("Auth error:", e);
+        if (e.code === 'auth/configuration-not-found' || e.code === 'auth/admin-restricted-operation' || e.code === 'auth/operation-not-allowed') {
+          setAuthError(e.code);
+        } else if (e.code === 'auth/custom-token-mismatch') {
+           try {
+             await signInAnonymously(auth);
+           } catch (retryErr: any) {
+             setAuthError(retryErr.message);
+           }
+        } else {
+          setAuthError(e.message || "Unknown auth error");
+        }
       }
     };
     initAuth();
@@ -117,20 +150,18 @@ export default function DrawAndGuessApp() {
     return () => unsubscribe();
   }, []);
 
-  // --- 2. Room Sync Listener ---
+  // --- Room Sync Hook ---
   useEffect(() => {
     if (!user || !roomId || view !== 'GAME' || !db) return;
 
-    // FIX: Added 'rooms' collection segment to make path length even (6 segments)
     const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`);
 
     const unsubscribe = onSnapshot(roomRef, (snapshot) => {
+      setLoading(false);
       if (snapshot.exists()) {
         const data = snapshot.data();
         setRoomData(data);
         setMessages(data.messages || []);
-        
-        // Auto-scroll chat
         if (chatEndRef.current) {
           chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
         }
@@ -140,13 +171,16 @@ export default function DrawAndGuessApp() {
       }
     }, (error) => {
       console.error("Error syncing room:", error);
-      // Optional: Handle permission errors or other sync issues
+      // Catch offline error here too if sync fails
+      if (error.message.includes('offline') || error.code === 'unavailable') {
+        setDbError("client-offline");
+      }
     });
 
     return () => unsubscribe();
   }, [user, roomId, view]);
 
-  // --- 3. Canvas Rendering Logic ---
+  // --- Canvas Rendering Hook ---
   const drawLine = (ctx: CanvasRenderingContext2D, line: Line) => {
     if (line.points.length < 2) return;
     ctx.beginPath();
@@ -168,10 +202,8 @@ export default function DrawAndGuessApp() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Responsive Canvas Sizing
     const parent = canvas.parentElement;
     if (parent) {
-      // Force a redraw on resize
       const size = parent.clientWidth;
       if (canvas.width !== size || canvas.height !== size) {
          canvas.width = size;
@@ -179,29 +211,112 @@ export default function DrawAndGuessApp() {
       }
     }
 
-    // Clear and Redraw
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw all synced lines
     if (roomData.lines) {
       roomData.lines.forEach((line: Line) => drawLine(ctx, line));
     }
     
-    // Draw current line being drawn (local feedback for drawer)
     if (currentLine) {
       drawLine(ctx, currentLine);
     }
   }, [roomData, currentLine, view]); 
 
-  // --- 4. User Actions ---
+  // --- Render Logic (Early Returns AFTER Hooks) ---
+
+  // Error Guard 1: Global Config
+  if (globalInitError) {
+    return (
+      <div className="min-h-screen bg-red-50 flex flex-col items-center justify-center p-6 text-center text-red-800">
+        <AlertTriangle size={48} className="mb-4 text-red-500" />
+        <h2 className="text-xl font-bold mb-2">应用配置错误</h2>
+        <p className="text-sm opacity-80 mb-4">Firebase 初始化失败。</p>
+        <code className="bg-red-100 p-2 rounded text-xs block max-w-full overflow-auto mb-4 text-left">
+          {globalInitError}
+        </code>
+      </div>
+    );
+  }
+
+  // Error Guard 2: Auth Runtime
+  if (authError) {
+    return (
+      <div className="min-h-screen bg-orange-50 flex flex-col items-center justify-center p-6 text-center text-orange-900">
+        <Settings size={48} className="mb-4 text-orange-500" />
+        <h2 className="text-xl font-bold mb-2">需要开启身份验证</h2>
+        <p className="text-sm mb-6 max-w-md">
+          Firebase 报错：<code>{authError}</code>
+        </p>
+        <div className="bg-white p-6 rounded-xl shadow-md text-left max-w-md w-full border border-orange-200">
+          <h3 className="font-bold text-lg mb-3 flex items-center gap-2">
+             🛠️ 如何修复:
+          </h3>
+          <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+            <li>打开 <a href="https://console.firebase.google.com/" target="_blank" className="text-blue-600 underline">Firebase 控制台</a>。</li>
+            <li>进入项目 <b>nihuawocai-8dfbd</b>。</li>
+            <li>点击左侧菜单 <b>Authentication</b> &rarr; <b>Get Started</b>。</li>
+            <li>在 <b>Sign-in method</b> 中开启 <b>Anonymous</b>。</li>
+          </ol>
+          <div className="mt-6 text-center">
+            <button 
+              onClick={() => window.location.reload()}
+              className="bg-orange-500 text-white px-6 py-2 rounded-full font-bold hover:bg-orange-600 transition-colors"
+            >
+              已修复，刷新页面
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Error Guard 3: Firestore Database Missing (The "offline" error)
+  if (dbError === "client-offline") {
+    return (
+      <div className="min-h-screen bg-blue-50 flex flex-col items-center justify-center p-6 text-center text-blue-900">
+        <Database size={48} className="mb-4 text-blue-500" />
+        <h2 className="text-xl font-bold mb-2">需要创建数据库</h2>
+        <p className="text-sm mb-6 max-w-md">
+          无法连接到 Firestore。通常是因为数据库尚未创建。
+        </p>
+        <div className="bg-white p-6 rounded-xl shadow-md text-left max-w-md w-full border border-blue-200">
+          <h3 className="font-bold text-lg mb-3 flex items-center gap-2">
+             🛠️ 关键步骤:
+          </h3>
+          <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+            <li>打开 <a href="https://console.firebase.google.com/" target="_blank" className="text-blue-600 underline">Firebase 控制台</a>。</li>
+            <li>点击左侧菜单 <b>Build</b> &rarr; <b>Firestore Database</b>。</li>
+            <li>点击 <b>Create Database</b> 按钮。</li>
+            <li>位置选默认，点击 Next。</li>
+            <li>
+              <span className="text-red-600 font-bold">重要：</span>
+              在 Rules 步骤，选择 <b>Start in test mode (测试模式)</b>。
+            </li>
+            <li>点击 <b>Enable</b> 等待完成。</li>
+          </ol>
+          <div className="mt-6 text-center">
+            <button 
+              onClick={() => window.location.reload()}
+              className="bg-blue-500 text-white px-6 py-2 rounded-full font-bold hover:bg-blue-600 transition-colors"
+            >
+              已创建完成，重试
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- User Action Handlers ---
 
   const handleCreateRoom = async () => {
     if (!user || !username || !db) return;
+    setLoading(true);
+    setDbError(null); // Reset error
     try {
       const newRoomId = Math.floor(1000 + Math.random() * 9000).toString();
-      // FIX: Added 'rooms' collection segment
       const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${newRoomId}`);
       
       const initialData = {
@@ -224,16 +339,23 @@ export default function DrawAndGuessApp() {
       await setDoc(roomRef, initialData);
       setRoomId(newRoomId);
       setView('GAME');
-    } catch (e) {
+    } catch (e: any) {
       console.error("Create room error:", e);
-      alert("创建房间失败，请重试");
+      setLoading(false);
+      // Catch offline/unavailable errors specifically
+      if (e.message.includes('offline') || e.code === 'unavailable') {
+        setDbError("client-offline");
+      } else {
+        alert("创建房间失败: " + e.message);
+      }
     }
   };
 
   const handleJoinRoom = async () => {
     if (!user || !username || !roomId || !db) return;
+    setLoading(true);
+    setDbError(null);
     try {
-      // FIX: Added 'rooms' collection segment
       const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`);
       const snap = await getDoc(roomRef);
 
@@ -254,17 +376,22 @@ export default function DrawAndGuessApp() {
         }
         setView('GAME');
       } else {
+        setLoading(false);
         alert("房间不存在");
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Join room error:", e);
-      alert("加入房间失败，请检查房间号");
+      setLoading(false);
+      if (e.message.includes('offline') || e.code === 'unavailable') {
+        setDbError("client-offline");
+      } else {
+        alert("加入房间失败: " + e.message);
+      }
     }
   };
 
   const startGame = async () => {
     if (!roomData || !db) return;
-    // FIX: Added 'rooms' collection segment
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
       status: 'SELECTING',
       currentDrawerIndex: 0,
@@ -276,7 +403,6 @@ export default function DrawAndGuessApp() {
 
   const selectWord = async (word: string) => {
     if (!db) return;
-    // FIX: Added 'rooms' collection segment
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
       currentWord: word,
       status: 'DRAWING',
@@ -289,7 +415,6 @@ export default function DrawAndGuessApp() {
     if (!inputGuess.trim() || !db) return;
     
     const isCorrect = inputGuess.trim() === roomData.currentWord;
-    // FIX: Added 'rooms' collection segment
     const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`);
 
     if (isCorrect && roomData.status === 'DRAWING') {
@@ -314,7 +439,7 @@ export default function DrawAndGuessApp() {
     setInputGuess('');
   };
 
-  // --- 5. Drawing Event Handlers ---
+  // --- Drawing Event Handlers ---
   const getCoordinates = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -341,16 +466,19 @@ export default function DrawAndGuessApp() {
 
   const handleDrawEnd = async () => {
     if (!currentLine || !db) return;
-    // FIX: Added 'rooms' collection segment
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
-      lines: arrayUnion(currentLine)
-    });
-    setCurrentLine(null);
+    const lineToUpload = currentLine;
+    setCurrentLine(null); 
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
+        lines: arrayUnion(lineToUpload)
+      });
+    } catch (e) {
+      console.error("Failed to upload line:", e);
+    }
   };
 
   const clearCanvas = async () => {
     if (roomData.players[roomData.currentDrawerIndex].uid !== user.uid || !db) return;
-    // FIX: Added 'rooms' collection segment
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `room_${roomId}`), {
       lines: []
     });
@@ -408,10 +536,11 @@ export default function DrawAndGuessApp() {
           <div className="space-y-4">
             <button
               onClick={handleCreateRoom}
-              className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95"
+              disabled={loading}
+              className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95 disabled:opacity-50"
             >
-              <Palette />
-              创建新房间
+              {loading ? <Loader2 className="animate-spin" /> : <Palette />}
+              {loading ? '创建中...' : '创建新房间'}
             </button>
             
             <div className="relative">
@@ -433,9 +562,10 @@ export default function DrawAndGuessApp() {
               />
               <button
                 onClick={handleJoinRoom}
-                className="bg-green-500 hover:bg-green-600 text-white font-bold px-6 rounded-xl shadow-md active:scale-95"
+                disabled={loading}
+                className="bg-green-500 hover:bg-green-600 text-white font-bold px-6 rounded-xl shadow-md active:scale-95 disabled:opacity-50"
               >
-                加入
+                {loading ? <Loader2 className="animate-spin" /> : '加入'}
               </button>
             </div>
           </div>
