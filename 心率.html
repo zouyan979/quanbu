@@ -181,10 +181,12 @@
             font-size: 12px;
             margin-top: 10px;
             display: none;
-            max-width: 400px;
-            background: rgba(0,0,0,0.8);
-            padding: 10px;
+            max-width: 500px;
+            background: rgba(20, 0, 0, 0.9);
+            padding: 15px;
             border: 1px solid #ff0000;
+            white-space: pre-wrap;
+            line-height: 1.5;
         }
     </style>
 </head>
@@ -350,10 +352,16 @@
         let flatlineOscillator = null;
 
         function initAudio() {
+            // 确保只初始化一次
             if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                try {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                } catch (e) {
+                    console.error("Audio Context Init Failed:", e);
+                }
             }
-            if (audioCtx.state === 'suspended') {
+            // 每次用户交互都尝试恢复音频上下文
+            if (audioCtx && audioCtx.state === 'suspended') {
                 audioCtx.resume();
             }
         }
@@ -362,43 +370,53 @@
             if (!audioEnabled || !audioCtx) return;
             if (isFlatline) return; // 如果正在长鸣，不播放心跳声
 
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
+            try {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
 
-            // 频率随心率微调，心率越高声音越尖
-            osc.frequency.value = 600 + (currentBPM * 2); 
-            osc.type = 'triangle';
+                // 频率随心率微调，心率越高声音越尖
+                osc.frequency.value = 600 + (currentBPM * 2); 
+                osc.type = 'triangle';
 
-            osc.connect(gain);
-            gain.connect(audioCtx.destination);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
 
-            osc.start();
-            
-            // 经典的“滴”声包络
-            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
-            osc.stop(audioCtx.currentTime + 0.15);
+                osc.start();
+                
+                // 经典的“滴”声包络
+                gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+                osc.stop(audioCtx.currentTime + 0.15);
+            } catch (e) {
+                console.warn("Audio Play Error:", e);
+            }
         }
 
         function startFlatlineSound() {
             if (!audioEnabled || !audioCtx || flatlineOscillator) return;
 
-            flatlineOscillator = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
+            try {
+                flatlineOscillator = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
 
-            flatlineOscillator.frequency.value = 400; // 沉闷的长音
-            flatlineOscillator.type = 'sine';
-            
-            flatlineOscillator.connect(gain);
-            gain.connect(audioCtx.destination);
-            
-            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
-            flatlineOscillator.start();
+                flatlineOscillator.frequency.value = 400; // 沉闷的长音
+                flatlineOscillator.type = 'sine';
+                
+                flatlineOscillator.connect(gain);
+                gain.connect(audioCtx.destination);
+                
+                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                flatlineOscillator.start();
+            } catch (e) {
+                console.warn("Flatline Audio Error:", e);
+            }
         }
 
         function stopFlatlineSound() {
             if (flatlineOscillator) {
-                flatlineOscillator.stop();
+                try {
+                    flatlineOscillator.stop();
+                } catch(e) {}
                 flatlineOscillator = null;
             }
         }
@@ -418,6 +436,10 @@
             initAudio(); // 必须在用户点击时初始化音频
             errorMsg.style.display = 'none';
             errorMsg.innerText = "";
+            
+            // 重置状态
+            stopFlatlineSound();
+            isFlatline = false;
 
             try {
                 // 检查浏览器是否支持
@@ -425,23 +447,37 @@
                     throw new Error("你的浏览器不支持 Web Bluetooth API。请使用 Chrome, Edge 或 Opera。");
                 }
 
+                // 1. 请求设备
+                connectionStatus.innerText = "SCANNING...";
+                connectionStatus.style.color = "yellow";
+                
                 const device = await navigator.bluetooth.requestDevice({
-                    filters: [{ services: ['heart_rate'] }]
+                    filters: [{ services: ['heart_rate'] }],
+                    optionalServices: ['heart_rate'] // 显式声明可选服务，增加兼容性
                 });
 
                 deviceNameDisplay.innerText = device.name;
-                connectionStatus.innerText = "CONNECTING...";
-                connectionStatus.style.color = "yellow";
+                connectionStatus.innerText = "CONNECTING GATT...";
 
+                // 2. 连接 GATT Server
                 const server = await device.gatt.connect();
+                
+                // 3. 获取服务
+                connectionStatus.innerText = "GETTING SERVICE...";
                 const service = await server.getPrimaryService('heart_rate');
+                
+                // 4. 获取特征值
+                connectionStatus.innerText = "GETTING CHAR...";
                 const characteristic = await service.getCharacteristic('heart_rate_measurement');
 
+                // 5. 开启通知
+                connectionStatus.innerText = "STARTING NOTIFY...";
                 await characteristic.startNotifications();
                 characteristic.addEventListener('characteristicvaluechanged', handleHeartRateChanged);
                 
                 device.addEventListener('gattserverdisconnected', onDisconnected);
 
+                // 成功连接
                 isConnected = true;
                 connectionStatus.innerText = "CONNECTED / MONITORING";
                 connectionStatus.style.color = "#00ff00";
@@ -467,11 +503,22 @@
                     msg = "【环境错误】浏览器安全策略禁止在预览窗口/iframe中连接蓝牙。\n" + 
                           "解决方法：请将此代码保存为 .html 文件，并在本地浏览器中通过 HTTPS 或 localhost 打开。";
                 }
+                // 针对 NetworkError (连接失败) 给出明确提示
+                else if (error.name === 'NetworkError' || error.message.includes('Connection attempt failed')) {
+                    msg = "【连接失败】无法建立连接。\n" +
+                          "常见原因与解决办法：\n" +
+                          "1. 手表是否正连着手机APP？请务必先断开手机蓝牙！(蓝牙通常不能同时连两个设备)\n" +
+                          "2. 手表是否已开启心率广播模式？(部分手环需要在设置里手动打开)\n" +
+                          "3. 设备电量是否充足？\n" +
+                          "4. 请尝试刷新页面重试。";
+                }
 
                 errorMsg.innerText = msg;
                 errorMsg.style.display = 'block';
                 connectionStatus.innerText = "FAILED";
                 connectionStatus.style.color = "red";
+                // 失败时也尝试停止之前的声音
+                stopFlatlineSound();
             }
         });
 
