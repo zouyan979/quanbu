@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bio-Rhythm Monitor // 核心监测</title>
+    <title>心率核心监测 // 生物反馈系统</title>
     <!-- 防止 favicon 404 报错 -->
     <link rel="icon" href="data:;base64,=">
     <style>
@@ -19,7 +19,7 @@
             padding: 0;
             background-color: var(--bg-color);
             color: var(--text-color);
-            font-family: 'Courier New', Courier, monospace; /* 复古终端字体 */
+            font-family: 'Courier New', Courier, monospace, "微软雅黑"; /* 添加中文字体支持 */
             overflow: hidden; /* 禁止滚动 */
             user-select: none;
         }
@@ -70,10 +70,11 @@
         }
 
         .title {
-            font-size: 14px;
+            font-size: 16px; /*稍微调大适合中文*/
             letter-spacing: 2px;
             opacity: 0.7;
             text-transform: uppercase;
+            margin-bottom: 5px;
         }
 
         .bpm-display {
@@ -92,6 +93,7 @@
         .bpm-unit {
             font-size: 1.5rem;
             opacity: 0.8;
+            font-family: "微软雅黑";
         }
 
         /* 底部控制栏 */
@@ -108,8 +110,9 @@
             border: 1px solid var(--primary-color);
             color: var(--primary-color);
             padding: 10px 20px;
-            font-family: inherit;
-            font-size: 14px;
+            font-family: inherit; /* 继承父级字体设置 */
+            font-size: 16px;
+            font-weight: bold;
             cursor: pointer;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -134,7 +137,7 @@
             display: flex;
             align-items: center;
             gap: 10px;
-            font-size: 12px;
+            font-size: 14px;
         }
 
         .led {
@@ -181,7 +184,7 @@
 
         #error-msg {
             color: #ff0000;
-            font-size: 12px;
+            font-size: 14px;
             margin-top: 10px;
             display: none;
             max-width: 500px;
@@ -208,21 +211,21 @@
     <div id="ui-layer">
         <div class="header">
             <div>
-                <div class="title">System Status: <span id="connection-status">DISCONNECTED</span></div>
-                <div class="title">Device: <span id="device-name">--</span></div>
+                <div class="title">系统状态: <span id="connection-status">等待连接</span></div>
+                <div class="title">当前设备: <span id="device-name">--</span></div>
             </div>
             <div class="bpm-display">
                 <span id="bpm-value">--</span>
-                <span class="bpm-unit">BPM</span>
+                <span class="bpm-unit">次/分</span>
             </div>
         </div>
 
         <div class="controls">
-            <button id="btn-connect">LINK DEVICE</button>
-            <button id="btn-audio">MUTE AUDIO</button>
+            <button id="btn-connect">连接设备</button>
+            <button id="btn-audio">静音</button>
             <div class="status-indicator">
                 <div class="led" id="pulse-led"></div>
-                <span id="status-text">SIGNAL LOST</span>
+                <span id="status-text">无信号</span>
             </div>
         </div>
         <!-- 错误提示单独放一行 -->
@@ -437,9 +440,10 @@
             isFlatline = false;
 
             try {
-                if (!navigator.bluetooth) throw new Error("Browser not supported");
+                if (!navigator.bluetooth) throw new Error("您的浏览器不支持蓝牙功能，请使用 Chrome 或 Edge。");
 
-                connectionStatus.innerText = "SCANNING...";
+                connectionStatus.innerText = "正在扫描...";
+                connectionStatus.style.color = "yellow";
                 
                 const device = await navigator.bluetooth.requestDevice({
                     filters: [{ services: ['heart_rate'] }],
@@ -447,7 +451,7 @@
                 });
 
                 deviceNameDisplay.innerText = device.name;
-                connectionStatus.innerText = "CONNECTING...";
+                connectionStatus.innerText = "正在连接...";
 
                 const server = await device.gatt.connect();
                 const service = await server.getPrimaryService('heart_rate');
@@ -459,10 +463,10 @@
                 device.addEventListener('gattserverdisconnected', onDisconnected);
 
                 isConnected = true;
-                connectionStatus.innerText = "CONNECTED / MONITORING";
+                connectionStatus.innerText = "已连接 / 监测中";
                 connectionStatus.style.color = "#00ff00";
-                statusText.innerText = "SIGNAL ACQUIRED";
-                btnConnect.innerText = "DISCONNECT";
+                statusText.innerText = "信号已捕获";
+                btnConnect.innerText = "断开连接";
                 
                 lastBeatTime = Date.now();
                 isFlatline = false;
@@ -474,13 +478,13 @@
 
             } catch (error) {
                 console.error(error);
-                let msg = "连接失败: " + error.message;
+                let msg = "连接错误: " + error.message;
                 if (error.name === 'NetworkError') {
-                    msg = "无法连接设备。请确保手表已断开与手机APP的连接，并点亮屏幕。";
+                    msg = "无法连接设备。\n请确保：\n1. 手表已断开与手机APP的连接\n2. 手表屏幕已点亮\n3. 刷新页面重试";
                 }
                 errorMsg.innerText = msg;
                 errorMsg.style.display = 'block';
-                connectionStatus.innerText = "FAILED";
+                connectionStatus.innerText = "连接失败";
                 connectionStatus.style.color = "red";
                 stopFlatlineSound();
             }
@@ -490,10 +494,10 @@
             isConnected = false;
             currentBPM = 0;
             bpmValue.innerText = "--"; // 重置显示
-            connectionStatus.innerText = "DISCONNECTED";
+            connectionStatus.innerText = "已断开连接";
             connectionStatus.style.color = "red";
-            statusText.innerText = "NO SIGNAL";
-            btnConnect.innerText = "LINK DEVICE";
+            statusText.innerText = "无信号";
+            btnConnect.innerText = "连接设备";
             stopFlatlineSound();
             btnConnect.onclick = () => location.reload();
         }
@@ -517,7 +521,7 @@
             if (isFlatline) {
                 isFlatline = false;
                 stopFlatlineSound();
-                statusText.innerText = "RHYTHM STABLE";
+                statusText.innerText = "心律稳定";
                 led.classList.remove('flatline');
                 bpmValue.style.color = "var(--primary-color)";
             }
@@ -566,7 +570,7 @@
                         startFlatlineSound();
                         
                         // 强制更新UI状态
-                        statusText.innerText = "CRITICAL / NO SIGNAL";
+                        statusText.innerText = "警告 / 信号丢失";
                         bpmValue.innerText = "--"; // 清空数字
                         currentBPM = 0;
                         
@@ -654,7 +658,7 @@
         const btnAudio = document.getElementById('btn-audio');
         btnAudio.addEventListener('click', () => {
             audioEnabled = !audioEnabled;
-            btnAudio.innerText = audioEnabled ? "MUTE AUDIO" : "ENABLE AUDIO";
+            btnAudio.innerText = audioEnabled ? "静音" : "开启声音";
             if (!audioEnabled) stopFlatlineSound();
         });
 
