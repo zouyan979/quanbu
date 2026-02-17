@@ -42,8 +42,6 @@
             height: 400px;
             transform: translateY(-50%);
             z-index: 2;
-            /* 去掉发光滤镜，追求真实锐利感 */
-            /* filter: drop-shadow(0 0 4px var(--primary-color)); */
         }
 
         /* UI 界面层 */
@@ -87,7 +85,6 @@
             line-height: 1;
             font-weight: bold;
             color: var(--primary-color);
-            /* 去掉过度模糊的阴影 */
             text-shadow: 0 0 5px rgba(255, 0, 0, 0.5);
             transition: color 0.3s;
         }
@@ -156,7 +153,7 @@
         .led.flatline {
              background-color: #ff0000;
              box-shadow: 0 0 15px #ff0000;
-             animation: blink 0.5s infinite; /* 报警时闪烁 */
+             animation: blink 0.5s infinite;
         }
 
         @keyframes blink {
@@ -174,7 +171,6 @@
             transform: translateY(-50%);
             border-top: 1px solid var(--grid-color);
             border-bottom: 1px solid var(--grid-color);
-            /* 更细密的网格 */
             background-image: 
                 linear-gradient(var(--grid-color) 1px, transparent 1px),
                 linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
@@ -184,17 +180,27 @@
             pointer-events: none;
         }
 
+        /* 错误提示框样式重构 - 改为居中弹窗 */
         #error-msg {
+            position: absolute; /* 绝对定位，脱离文档流 */
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%); /* 居中 */
+            z-index: 999; /* 确保在最上层 */
+            
             color: #ff0000;
             font-size: 14px;
-            margin-top: 10px;
             display: none;
+            width: 80%;
             max-width: 500px;
-            background: rgba(20, 0, 0, 0.9);
-            padding: 15px;
+            background: rgba(10, 0, 0, 0.95); /* 深色背景，高不透明度 */
+            padding: 30px;
             border: 1px solid #ff0000;
+            box-shadow: 0 0 50px rgba(255, 0, 0, 0.3); /* 强烈的红色光晕 */
             white-space: pre-wrap;
-            line-height: 1.5;
+            line-height: 1.6;
+            text-align: left;
+            pointer-events: auto; /* 允许点击弹窗内的内容 */
         }
     </style>
 </head>
@@ -230,9 +236,10 @@
                 <span id="status-text">无信号</span>
             </div>
         </div>
-        <!-- 错误提示单独放一行 -->
-        <div id="error-msg"></div>
     </div>
+    
+    <!-- 错误提示移出 flex 容器，避免影响布局 -->
+    <div id="error-msg"></div>
 
     <script>
         /**
@@ -289,7 +296,6 @@
                 ctx.beginPath();
                 const currentSize = this.size * (1 + surge * 2); 
                 const currentAlpha = Math.min(this.alpha + surge, 1);
-                // 粒子颜色也稍微偏红一点
                 ctx.arc(this.x, this.y, currentSize, 0, Math.PI * 2);
                 ctx.fillStyle = `rgba(255, 50, 50, ${currentAlpha})`;
                 ctx.fill();
@@ -384,7 +390,6 @@
         }
 
         function startFlatlineSound() {
-            // 如果已经有振荡器在响，不要重复创建
             if (flatlineOscillator) return;
             if (!audioEnabled || !audioCtx) return;
 
@@ -450,7 +455,7 @@
 
                 isConnected = true;
                 connectionStatus.innerText = "已连接 / 监测中";
-                connectionStatus.style.color = "#ff0000"; // 红色
+                connectionStatus.style.color = "#ff0000"; 
                 statusText.innerText = "信号已捕获";
                 btnConnect.innerText = "断开连接";
                 
@@ -518,7 +523,7 @@
         }
 
         let nextBeatTime = 0;
-        let lastDrawnY = centerY; // 记录上一次的Y坐标，确保线条连续
+        let lastDrawnY = centerY; 
 
         /**
          * 5. 主动画循环
@@ -539,7 +544,6 @@
             const now = Date.now();
 
             if (isConnected) {
-                // 生成心跳
                 if (currentBPM > 0) {
                     const interval = 60000 / currentBPM;
                     if (now >= nextBeatTime) {
@@ -548,7 +552,6 @@
                     }
                 }
 
-                // 看门狗逻辑
                 if (now - lastBeatTime > 5000) {
                     if (!isFlatline) {
                         isFlatline = true;
@@ -567,22 +570,16 @@
                 pulseIntensity = 0;
             }
 
-            // C. 优化的 ECG 绘制 (滚动模式 Scrolling)
-            
-            // 1. 确定移动速度 (每帧向左移动的像素)
-            let speed = 2; // 默认速度
+            // C. 优化的 ECG 绘制
+            let speed = 2; 
             if(isConnected && !isFlatline && currentBPM > 0) {
-                // 速度随BPM微调，但不用太夸张，保持波形可读性
                 speed = 2 + (currentBPM / 120); 
             }
 
-            // 2. 将整个画布内容向左平移 'speed' 像素
-            // 利用 drawImage 把当前画布画回自己身上，位置偏移
             ecgCtx.globalCompositeOperation = 'copy';
             ecgCtx.drawImage(ecgCanvas, -speed, 0);
-            ecgCtx.globalCompositeOperation = 'source-over'; // 恢复默认
+            ecgCtx.globalCompositeOperation = 'source-over'; 
 
-            // 3. 计算最新的 Y 坐标
             let targetY = centerY;
             
             if (isConnected && !isFlatline && waveQueue.length > 0) {
@@ -594,25 +591,19 @@
                     waveQueue.shift(); 
                 }
             } else if (!isConnected || isFlatline) {
-                // 噪音/直线
                 targetY = centerY + (Math.random() - 0.5) * 2;
             }
 
-            // 4. 在最右侧绘制新的一段线
             ecgCtx.beginPath();
-            ecgCtx.lineWidth = 2; // 线条稍微细一点更像仪器
-            ecgCtx.strokeStyle = '#ff0000'; // 纯红
+            ecgCtx.lineWidth = 2; 
+            ecgCtx.strokeStyle = '#ff0000'; 
             ecgCtx.lineCap = 'round';
             ecgCtx.lineJoin = 'round';
             
-            // 从 (width-speed) 处画到 (width) 处
-            // 起点Y应该是上一帧的targetY (lastDrawnY)，终点是当前的targetY
-            // 但因为画布左移了，上一帧的右边界现在在 width-speed
             ecgCtx.moveTo(ecgCanvas.width - speed, lastDrawnY);
             ecgCtx.lineTo(ecgCanvas.width, targetY);
             ecgCtx.stroke();
 
-            // 更新记录
             lastDrawnY = targetY;
         }
 
@@ -622,11 +613,9 @@
             btnAudio.innerText = audioEnabled ? "静音" : "开启声音";
             
             if (audioEnabled) {
-                // 1. 尝试恢复 AudioContext
                 if (audioCtx && audioCtx.state === 'suspended') {
                     audioCtx.resume();
                 }
-                // 2. 修复Bug：如果当前是长鸣状态，取消静音时应立即恢复声音
                 if (isFlatline) {
                     startFlatlineSound();
                 }
