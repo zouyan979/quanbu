@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bio-Rhythm Monitor // 核心监测</title>
+    <style>
+        :root {
+            --primary-color: #ff3366; /* 霓虹红粉色 */
+            --bg-color: #050505;     /* 极深灰/黑 */
+            --text-color: #ffffff;
+            --grid-color: rgba(255, 51, 102, 0.15);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Courier New', Courier, monospace; /* 复古终端字体 */
+            overflow: hidden; /* 禁止滚动 */
+            user-select: none;
+        }
+
+        /* 画布层级管理 */
+        #particleCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        #ecgCanvas {
+            position: absolute;
+            top: 50%; /* 垂直居中 */
+            left: 0;
+            width: 100%;
+            height: 300px; /* 限制ECG高度 */
+            transform: translateY(-50%);
+            z-index: 2;
+            /* 稍微添加一点发光效果 */
+            filter: drop-shadow(0 0 8px var(--primary-color));
+        }
+
+        /* UI 界面层 */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 3;
+            pointer-events: none; /* 让鼠标事件穿透到下层，除非点按钮 */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 40px;
+            box-sizing: border-box;
+        }
+
+        /* 顶部信息 */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .title {
+            font-size: 14px;
+            letter-spacing: 2px;
+            opacity: 0.7;
+            text-transform: uppercase;
+        }
+
+        .bpm-display {
+            text-align: right;
+        }
+
+        #bpm-value {
+            font-size: 8rem;
+            line-height: 1;
+            font-weight: bold;
+            color: var(--primary-color);
+            text-shadow: 0 0 20px rgba(255, 51, 102, 0.5);
+        }
+
+        .bpm-unit {
+            font-size: 1.5rem;
+            opacity: 0.8;
+        }
+
+        /* 底部控制栏 */
+        .controls {
+            pointer-events: auto; /* 允许点击 */
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap; /* 防止小屏幕溢出 */
+        }
+
+        button {
+            background: transparent;
+            border: 1px solid var(--primary-color);
+            color: var(--primary-color);
+            padding: 10px 20px;
+            font-family: inherit;
+            font-size: 14px;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            background: var(--primary-color);
+            color: var(--bg-color);
+            box-shadow: 0 0 15px var(--primary-color);
+        }
+
+        button:disabled {
+            border-color: #555;
+            color: #555;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        /* 状态指示灯 */
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+        }
+
+        .led {
+            width: 10px;
+            height: 10px;
+            background-color: #333;
+            border-radius: 50%;
+            box-shadow: 0 0 5px #333;
+        }
+
+        .led.active {
+            background-color: var(--primary-color);
+            box-shadow: 0 0 10px var(--primary-color);
+            animation: blink 1s infinite;
+        }
+        
+        .led.flatline {
+             background-color: #ff0000;
+             box-shadow: 0 0 20px #ff0000;
+             animation: none;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* 网格背景装饰 */
+        .grid-bg {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 100%;
+            height: 200px;
+            transform: translateY(-50%);
+            border-top: 1px solid var(--grid-color);
+            border-bottom: 1px solid var(--grid-color);
+            background: linear-gradient(90deg, transparent 0%, var(--grid-color) 1px, transparent 1px);
+            background-size: 40px 100%;
+            z-index: 1;
+            opacity: 0.3;
+            pointer-events: none;
+        }
+
+        #error-msg {
+            color: #ff0000;
+            font-size: 12px;
+            margin-top: 10px;
+            display: none;
+            max-width: 400px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border: 1px solid #ff0000;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 背景粒子画布 -->
+    <canvas id="particleCanvas"></canvas>
+    
+    <!-- 装饰网格 -->
+    <div class="grid-bg"></div>
+
+    <!-- 心电图画布 -->
+    <canvas id="ecgCanvas"></canvas>
+
+    <!-- UI 层 -->
+    <div id="ui-layer">
+        <div class="header">
+            <div>
+                <div class="title">System Status: <span id="connection-status">DISCONNECTED</span></div>
+                <div class="title">Device: <span id="device-name">--</span></div>
+            </div>
+            <div class="bpm-display">
+                <span id="bpm-value">--</span>
+                <span class="bpm-unit">BPM</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="btn-connect">LINK DEVICE</button>
+            <button id="btn-audio">MUTE AUDIO</button>
+            <div class="status-indicator">
+                <div class="led" id="pulse-led"></div>
+                <span id="status-text">SIGNAL LOST</span>
+            </div>
+        </div>
+        <!-- 错误提示单独放一行 -->
+        <div id="error-msg"></div>
+    </div>
+
+    <script>
+        /**
+         * 1. 粒子特效系统 (Particle System)
+         */
+        const pCanvas = document.getElementById('particleCanvas');
+        const pCtx = pCanvas.getContext('2d');
+        
+        let particles = [];
+        let pulseIntensity = 0; // 心跳冲击波强度 (0.0 - 1.0)
+
+        // 自适应屏幕
+        function resizeCanvas() {
+            pCanvas.width = window.innerWidth;
+            pCanvas.height = window.innerHeight;
+            ecgCanvas.width = window.innerWidth;
+            ecgCanvas.height = 300;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        class Particle {
+            constructor() {
+                this.reset();
+            }
+
+            reset() {
+                this.x = Math.random() * pCanvas.width;
+                this.y = Math.random() * pCanvas.height;
+                // 深度感 (0: 远, 1: 近)
+                this.z = Math.random(); 
+                this.size = Math.random() * 2 + 1;
+                // 基础漂浮速度
+                this.vx = (Math.random() - 0.5) * 0.5;
+                this.vy = (Math.random() - 0.5) * 0.5;
+                this.alpha = Math.random() * 0.5 + 0.1;
+            }
+
+            update(surge) {
+                // surge 是心跳带来的爆发力
+                let speedMultiplier = 1 + (surge * 10); // 心跳时速度快10倍
+
+                this.x += this.vx * speedMultiplier;
+                this.y += this.vy * speedMultiplier;
+
+                // 从中心向外扩散的效果 (配合心跳)
+                if (surge > 0.1) {
+                    const cx = pCanvas.width / 2;
+                    const cy = pCanvas.height / 2;
+                    const dx = this.x - cx;
+                    const dy = this.y - cy;
+                    // 简单的斥力
+                    this.x += dx * 0.02 * surge;
+                    this.y += dy * 0.02 * surge;
+                }
+
+                // 边界检查，超出重置
+                if (this.x < 0 || this.x > pCanvas.width || this.y < 0 || this.y > pCanvas.height) {
+                    this.reset();
+                }
+            }
+
+            draw(ctx, surge) {
+                ctx.beginPath();
+                // 心跳时粒子变大、变亮
+                const currentSize = this.size * (1 + surge * 2); 
+                const currentAlpha = Math.min(this.alpha + surge, 1);
+                
+                ctx.arc(this.x, this.y, currentSize, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 51, 102, ${currentAlpha})`; // 使用主题色
+                ctx.fill();
+            }
+        }
+
+        // 初始化粒子
+        function initParticles() {
+            particles = [];
+            const count = (window.innerWidth * window.innerHeight) / 8000; // 根据分辨率决定数量
+            for (let i = 0; i < count; i++) {
+                particles.push(new Particle());
+            }
+        }
+
+        /**
+         * 2. ECG 绘制系统 (Canvas)
+         */
+        const ecgCanvas = document.getElementById('ecgCanvas');
+        const ecgCtx = ecgCanvas.getContext('2d');
+        
+        let ecgX = 0;
+        let lastEcgY = 150; // 中线
+        const speedBase = 2; // 基础扫描速度
+        let currentBPM = 0;
+        let lastBeatTime = 0;
+        let isConnected = false;
+        let isFlatline = false;
+
+        // ECG 波形模拟数据 (P, Q, R, S, T 波的相对高度和宽度)
+        // 这是一个简化的心跳形状队列
+        let waveQueue = []; 
+
+        function generateHeartbeat() {
+            // 向队列添加一组波形指令
+            // [x偏移, y高度] (高度：负数向上，正数向下，0为基准)
+            // QRS 波群
+            waveQueue.push({dx: 5, dy: -10}); // P wave
+            waveQueue.push({dx: 10, dy: 0});
+            waveQueue.push({dx: 5, dy: 10}); // Q
+            waveQueue.push({dx: 5, dy: -80}); // R (波峰!) - 触发视觉冲击的最佳点
+            waveQueue.push({dx: 5, dy: 20}); // S
+            waveQueue.push({dx: 10, dy: 0});
+            waveQueue.push({dx: 10, dy: -15}); // T wave
+            waveQueue.push({dx: 15, dy: 0});
+            
+            // 触发粒子爆发
+            pulseIntensity = 1.0; 
+            playBeep();
+            flashLed();
+        }
+
+        /**
+         * 3. 音频系统 (Web Audio API)
+         */
+        let audioCtx;
+        let audioEnabled = true;
+        let flatlineOscillator = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playBeep() {
+            if (!audioEnabled || !audioCtx) return;
+            if (isFlatline) return; // 如果正在长鸣，不播放心跳声
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+
+            // 频率随心率微调，心率越高声音越尖
+            osc.frequency.value = 600 + (currentBPM * 2); 
+            osc.type = 'triangle';
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            osc.start();
+            
+            // 经典的“滴”声包络
+            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+            osc.stop(audioCtx.currentTime + 0.15);
+        }
+
+        function startFlatlineSound() {
+            if (!audioEnabled || !audioCtx || flatlineOscillator) return;
+
+            flatlineOscillator = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+
+            flatlineOscillator.frequency.value = 400; // 沉闷的长音
+            flatlineOscillator.type = 'sine';
+            
+            flatlineOscillator.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            flatlineOscillator.start();
+        }
+
+        function stopFlatlineSound() {
+            if (flatlineOscillator) {
+                flatlineOscillator.stop();
+                flatlineOscillator = null;
+            }
+        }
+
+        /**
+         * 4. 蓝牙连接逻辑 (Web Bluetooth API)
+         */
+        const btnConnect = document.getElementById('btn-connect');
+        const statusText = document.getElementById('status-text');
+        const bpmValue = document.getElementById('bpm-value');
+        const led = document.getElementById('pulse-led');
+        const connectionStatus = document.getElementById('connection-status');
+        const deviceNameDisplay = document.getElementById('device-name');
+        const errorMsg = document.getElementById('error-msg');
+
+        btnConnect.addEventListener('click', async () => {
+            initAudio(); // 必须在用户点击时初始化音频
+            errorMsg.style.display = 'none';
+            errorMsg.innerText = "";
+
+            try {
+                // 检查浏览器是否支持
+                if (!navigator.bluetooth) {
+                    throw new Error("你的浏览器不支持 Web Bluetooth API。请使用 Chrome, Edge 或 Opera。");
+                }
+
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: ['heart_rate'] }]
+                });
+
+                deviceNameDisplay.innerText = device.name;
+                connectionStatus.innerText = "CONNECTING...";
+                connectionStatus.style.color = "yellow";
+
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService('heart_rate');
+                const characteristic = await service.getCharacteristic('heart_rate_measurement');
+
+                await characteristic.startNotifications();
+                characteristic.addEventListener('characteristicvaluechanged', handleHeartRateChanged);
+                
+                device.addEventListener('gattserverdisconnected', onDisconnected);
+
+                isConnected = true;
+                connectionStatus.innerText = "CONNECTED / MONITORING";
+                connectionStatus.style.color = "#00ff00";
+                statusText.innerText = "SIGNAL ACQUIRED";
+                btnConnect.innerText = "DISCONNECT";
+                
+                // 重置看门狗
+                lastBeatTime = Date.now();
+                isFlatline = false;
+                stopFlatlineSound();
+
+                // 简单的断开逻辑切换
+                btnConnect.onclick = () => {
+                   if(device.gatt.connected) device.gatt.disconnect();
+                };
+
+            } catch (error) {
+                console.error(error);
+                let msg = "Error: " + error.message;
+                
+                // 针对 SecurityError 给出明确提示
+                if (error.name === 'SecurityError' && error.message.includes('permissions policy')) {
+                    msg = "【环境错误】浏览器安全策略禁止在预览窗口/iframe中连接蓝牙。\n" + 
+                          "解决方法：请将此代码保存为 .html 文件，并在本地浏览器中通过 HTTPS 或 localhost 打开。";
+                }
+
+                errorMsg.innerText = msg;
+                errorMsg.style.display = 'block';
+                connectionStatus.innerText = "FAILED";
+                connectionStatus.style.color = "red";
+            }
+        });
+
+        function onDisconnected() {
+            isConnected = false;
+            currentBPM = 0;
+            bpmValue.innerText = "--";
+            connectionStatus.innerText = "DISCONNECTED";
+            connectionStatus.style.color = "red";
+            statusText.innerText = "NO SIGNAL";
+            btnConnect.innerText = "LINK DEVICE";
+            // 重新绑定连接点击事件
+            btnConnect.onclick = () => location.reload(); // 简单重载以清理状态
+        }
+
+        function handleHeartRateChanged(event) {
+            const value = event.target.value;
+            // 解析标准 BLE 心率数据
+            // 第一个字节是 Flags，最低位决定 BPM 是 8bit 还是 16bit
+            const flags = value.getUint8(0);
+            let bpm = 0;
+            
+            if (flags & 1) { 
+                // 16-bit
+                bpm = value.getUint16(1, true); // little-endian
+            } else {
+                // 8-bit
+                bpm = value.getUint8(1);
+            }
+
+            // 更新数据
+            const now = Date.now();
+            // 如果收到数据，视为心跳更新
+            currentBPM = bpm;
+            bpmValue.innerText = bpm;
+            lastBeatTime = now;
+            
+            // 退出长鸣状态
+            if (isFlatline) {
+                isFlatline = false;
+                stopFlatlineSound();
+                statusText.innerText = "RHYTHM STABLE";
+                led.classList.remove('flatline');
+            }
+        }
+
+        function flashLed() {
+            led.classList.add('active');
+            setTimeout(() => led.classList.remove('active'), 100);
+        }
+
+        // 模拟 BPM 转换成毫秒间隔
+        let nextBeatTime = 0;
+
+        /**
+         * 5. 主动画循环 (Loop)
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // A. 粒子背景渲染 -----------------------
+            pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
+            
+            // 衰减冲击波
+            pulseIntensity *= 0.92; 
+            if (pulseIntensity < 0.01) pulseIntensity = 0;
+
+            particles.forEach(p => {
+                p.update(pulseIntensity);
+                p.draw(pCtx, pulseIntensity);
+            });
+
+            // B. 逻辑处理：心跳模拟与看门狗 -----------
+            const now = Date.now();
+
+            if (isConnected) {
+                // 计算何时触发下一次心跳 (根据 BPM)
+                if (currentBPM > 0) {
+                    const interval = 60000 / currentBPM;
+                    if (now >= nextBeatTime) {
+                        generateHeartbeat(); // 生成一组波形数据，并播放声音
+                        nextBeatTime = now + interval;
+                    }
+                }
+
+                // 看门狗：如果超过 5 秒没有收到蓝牙数据包，或者BPM为0
+                // 触发 Flatline 效果
+                if (now - lastBeatTime > 5000) {
+                    if (!isFlatline) {
+                        isFlatline = true;
+                        startFlatlineSound();
+                        statusText.innerText = "CRITICAL / NO SIGNAL";
+                        led.classList.add('flatline');
+                        pulseIntensity = 0; // 粒子静止
+                    }
+                }
+            } else {
+                // 未连接状态，粒子缓慢漂浮
+                pulseIntensity = 0;
+            }
+
+
+            // C. ECG 波形绘制 -----------------------
+            // 模拟“扫描线”效果：
+            // 我们不清除整个画布，而是绘制一个半透明的黑色矩形在扫描头的前面，或者逐渐淡出整个屏幕
+            // 这里使用：覆盖一层微弱的黑色来产生拖影
+            ecgCtx.fillStyle = 'rgba(5, 5, 5, 0.1)'; // 淡出旧轨迹
+            ecgCtx.fillRect(0, 0, ecgCanvas.width, ecgCanvas.height);
+
+            // 绘制当前点
+            ecgCtx.beginPath();
+            ecgCtx.lineWidth = 3;
+            ecgCtx.strokeStyle = isFlatline ? '#ff0000' : '#ff3366';
+            ecgCtx.lineCap = 'round';
+            ecgCtx.lineJoin = 'round';
+
+            // 移动扫描头 x
+            // 速度根据 BPM 动态调整，越快扫描越快
+            let speed = speedBase;
+            if(isConnected && !isFlatline) speed = (currentBPM / 60) * speedBase;
+
+            let prevX = ecgX;
+            let prevY = lastEcgY;
+
+            ecgX += speed;
+
+            // --- 简化的波形生成器 ---
+            let currentDy = 0;
+            
+            // 使用时间差计算当前的 Y 轴偏移
+            if (isConnected && !isFlatline && currentBPM > 0) {
+                // 计算当前处于心跳周期的哪个位置 (0 - 1)
+                const beatDuration = 60000 / currentBPM;
+                const timeSinceBeat = now - (nextBeatTime - beatDuration);
+                const progress = timeSinceBeat / beatDuration;
+                
+                // 为了视觉效果，我们直接利用 waveQueue 作为“瞬时动画”
+                // 如果 waveQueue 有东西，优先消耗
+                if (waveQueue.length > 0) {
+                    let step = waveQueue.shift(); // 取出下一步
+                    currentDy = step.dy;
+                } else {
+                    // 基准线噪音
+                    currentDy = (Math.random() - 0.5) * 2;
+                }
+
+            } else {
+                // 基准线 (flatline 或 未连接)
+                currentDy = 0;
+            }
+
+            // 更新 Y
+            let targetY = 150 + currentDy;
+            
+            // 绘制线条
+            ecgCtx.moveTo(prevX, prevY);
+            ecgCtx.lineTo(ecgX, targetY);
+            ecgCtx.stroke();
+
+            // 绘制扫描头的光点
+            ecgCtx.fillStyle = '#fff';
+            ecgCtx.fillRect(ecgX, targetY - 2, 4, 4);
+
+            lastEcgY = targetY;
+
+            // 循环扫描
+            if (ecgX > ecgCanvas.width) {
+                ecgX = 0;
+                prevX = 0;
+                ecgCtx.moveTo(0, targetY);
+            }
+        }
+
+        // 音频开关
+        const btnAudio = document.getElementById('btn-audio');
+        btnAudio.addEventListener('click', () => {
+            audioEnabled = !audioEnabled;
+            btnAudio.innerText = audioEnabled ? "MUTE AUDIO" : "ENABLE AUDIO";
+            if (!audioEnabled) stopFlatlineSound();
+        });
+
+        // 启动
+        resizeCanvas();
+        initParticles();
+        animate();
+
+    </script>
+</body>
+</html>
