@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#4A90D9">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>健康小助手</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 头部 -->
+    <header class="header">
+      <h1>💪 健康小助手</h1>
+      <p class="subtitle">你的专属健康提醒伙伴</p>
+    </header>
+
+    <!-- 通知权限 -->
+    <div id="notification-banner" class="banner hidden">
+      <p>🔔 开启通知提醒，不错过任何健康提示</p>
+      <button id="enable-notification" class="btn btn-primary">开启通知</button>
+    </div>
+
+    <!-- 健康数据卡片 -->
+    <section class="card health-data">
+      <h2>📊 今日健康数据</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <div class="stat-value" id="steps-count">--</div>
+          <div class="stat-label">🚶 步数</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="calories-count">--</div>
+          <div class="stat-label">🔥 卡路里</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="distance-count">--</div>
+          <div class="stat-label">📏 距离</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="active-minutes">--</div>
+          <div class="stat-label">⏱️ 活动时长</div>
+        </div>
+      </div>
+      <button id="sync-health" class="btn btn-secondary">🔄 同步健康数据</button>
+    </section>
+
+    <!-- 提醒设置 -->
+    <section class="card reminders">
+      <h2>⏰ 提醒设置</h2>
+      
+      <div class="reminder-item">
+        <div class="reminder-info">
+          <span class="reminder-icon">💧</span>
+          <div>
+            <div class="reminder-name">喝水提醒</div>
+            <div class="reminder-desc">每 2 小时提醒你喝水</div>
+          </div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-water" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="reminder-item">
+        <div class="reminder-info">
+          <span class="reminder-icon">🧘</span>
+          <div>
+            <div class="reminder-name">起身活动</div>
+            <div class="reminder-desc">每 1 小时提醒活动身体</div>
+          </div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-move" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="reminder-item">
+        <div class="reminder-info">
+          <span class="reminder-icon">👁️</span>
+          <div>
+            <div class="reminder-name">眼睛休息</div>
+            <div class="reminder-desc">每 30 分钟提醒看远处</div>
+          </div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-eyes" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="reminder-item">
+        <div class="reminder-info">
+          <span class="reminder-icon">😴</span>
+          <div>
+            <div class="reminder-name">睡觉提醒</div>
+            <div class="reminder-desc">晚上 11 点提醒睡觉</div>
+          </div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-sleep" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <!-- 免打扰时段 -->
+    <section class="card dnd-mode">
+      <h2>🌙 免打扰时段</h2>
+      <div class="time-range">
+        <input type="time" id="dnd-start" value="23:00">
+        <span>至</span>
+        <input type="time" id="dnd-end" value="07:00">
+      </div>
+      <p class="hint">此时间段内不会发送提醒</p>
+    </section>
+
+    <!-- 统计 -->
+    <section class="card stats">
+      <h2>📈 本周统计</h2>
+      <div class="week-stats">
+        <div class="day-stat">
+          <span class="day-name">今天</span>
+          <div class="day-bar"><div class="bar-fill" style="height: 80%"></div></div>
+        </div>
+        <div class="day-stat">
+          <span class="day-name">昨天</span>
+          <div class="day-bar"><div class="bar-fill" style="height: 60%"></div></div>
+        </div>
+        <div class="day-stat">
+          <span class="day-name">前天</span>
+          <div class="day-bar"><div class="bar-fill" style="height: 75%"></div></div>
+        </div>
+      </div>
+      <p class="stat-summary">连续达标 <strong id="streak-days">3</strong> 天 🔥</p>
+    </section>
+
+    <!-- 底部 -->
+    <footer class="footer">
+      <p>Made with ❤️ for your health</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
