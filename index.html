@@ -2,150 +2,359 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#4A90D9">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#667eea">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>健康小助手</title>
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div class="app">
-    <!-- 头部 -->
-    <header class="header">
-      <h1>💪 健康小助手</h1>
-      <p class="subtitle">你的专属健康提醒伙伴</p>
-    </header>
-
-    <!-- 通知权限 -->
-    <div id="notification-banner" class="banner hidden">
-      <p>🔔 开启通知提醒，不错过任何健康提示</p>
-      <button id="enable-notification" class="btn btn-primary">开启通知</button>
+  <!-- 登录页面 -->
+  <div id="login-page" class="page">
+    <div class="login-container">
+      <div class="login-card">
+        <div class="login-header">
+          <div class="logo">💪</div>
+          <h1>健康小助手</h1>
+          <p>开启你的健康生活</p>
+        </div>
+        
+        <form id="login-form" class="login-form">
+          <div class="form-group">
+            <label for="login-email">邮箱</label>
+            <input type="email" id="login-email" placeholder="your@email.com" required>
+          </div>
+          
+          <div class="form-group">
+            <label for="login-password">密码</label>
+            <input type="password" id="login-password" placeholder="至少 6 位密码" required minlength="6">
+          </div>
+          
+          <button type="submit" class="btn btn-primary btn-lg">
+            <span class="btn-text">登录</span>
+            <span class="btn-loader hidden">
+              <span class="spinner"></span>
+            </span>
+          </button>
+        </form>
+        
+        <div class="login-divider">
+          <span>或</span>
+        </div>
+        
+        <button id="show-register" class="btn btn-outline">
+          创建新账号
+        </button>
+        
+        <div class="login-footer">
+          <p>登录即代表你同意 <a href="#">服务条款</a> 和 <a href="#">隐私政策</a></p>
+        </div>
+      </div>
     </div>
-
-    <!-- 健康数据卡片 -->
-    <section class="card health-data">
-      <h2>📊 今日健康数据</h2>
-      <div class="stats-grid">
-        <div class="stat">
-          <div class="stat-value" id="steps-count">--</div>
-          <div class="stat-label">🚶 步数</div>
-        </div>
-        <div class="stat">
-          <div class="stat-value" id="calories-count">--</div>
-          <div class="stat-label">🔥 卡路里</div>
-        </div>
-        <div class="stat">
-          <div class="stat-value" id="distance-count">--</div>
-          <div class="stat-label">📏 距离</div>
-        </div>
-        <div class="stat">
-          <div class="stat-value" id="active-minutes">--</div>
-          <div class="stat-label">⏱️ 活动时长</div>
-        </div>
-      </div>
-      <button id="sync-health" class="btn btn-secondary">🔄 同步健康数据</button>
-    </section>
-
-    <!-- 提醒设置 -->
-    <section class="card reminders">
-      <h2>⏰ 提醒设置</h2>
-      
-      <div class="reminder-item">
-        <div class="reminder-info">
-          <span class="reminder-icon">💧</span>
-          <div>
-            <div class="reminder-name">喝水提醒</div>
-            <div class="reminder-desc">每 2 小时提醒你喝水</div>
-          </div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="toggle-water" checked>
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div class="reminder-item">
-        <div class="reminder-info">
-          <span class="reminder-icon">🧘</span>
-          <div>
-            <div class="reminder-name">起身活动</div>
-            <div class="reminder-desc">每 1 小时提醒活动身体</div>
-          </div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="toggle-move" checked>
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div class="reminder-item">
-        <div class="reminder-info">
-          <span class="reminder-icon">👁️</span>
-          <div>
-            <div class="reminder-name">眼睛休息</div>
-            <div class="reminder-desc">每 30 分钟提醒看远处</div>
-          </div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="toggle-eyes" checked>
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div class="reminder-item">
-        <div class="reminder-info">
-          <span class="reminder-icon">😴</span>
-          <div>
-            <div class="reminder-name">睡觉提醒</div>
-            <div class="reminder-desc">晚上 11 点提醒睡觉</div>
-          </div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="toggle-sleep" checked>
-          <span class="slider"></span>
-        </label>
-      </div>
-    </section>
-
-    <!-- 免打扰时段 -->
-    <section class="card dnd-mode">
-      <h2>🌙 免打扰时段</h2>
-      <div class="time-range">
-        <input type="time" id="dnd-start" value="23:00">
-        <span>至</span>
-        <input type="time" id="dnd-end" value="07:00">
-      </div>
-      <p class="hint">此时间段内不会发送提醒</p>
-    </section>
-
-    <!-- 统计 -->
-    <section class="card stats">
-      <h2>📈 本周统计</h2>
-      <div class="week-stats">
-        <div class="day-stat">
-          <span class="day-name">今天</span>
-          <div class="day-bar"><div class="bar-fill" style="height: 80%"></div></div>
-        </div>
-        <div class="day-stat">
-          <span class="day-name">昨天</span>
-          <div class="day-bar"><div class="bar-fill" style="height: 60%"></div></div>
-        </div>
-        <div class="day-stat">
-          <span class="day-name">前天</span>
-          <div class="day-bar"><div class="bar-fill" style="height: 75%"></div></div>
-        </div>
-      </div>
-      <p class="stat-summary">连续达标 <strong id="streak-days">3</strong> 天 🔥</p>
-    </section>
-
-    <!-- 底部 -->
-    <footer class="footer">
-      <p>Made with ❤️ for your health</p>
-    </footer>
   </div>
+
+  <!-- 注册页面 -->
+  <div id="register-page" class="page hidden">
+    <div class="login-container">
+      <div class="login-card">
+        <div class="login-header">
+          <div class="logo">🎉</div>
+          <h1>欢迎加入</h1>
+          <p>创建你的健康账号</p>
+        </div>
+        
+        <form id="register-form" class="login-form">
+          <div class="form-group">
+            <label for="register-name">昵称</label>
+            <input type="text" id="register-name" placeholder="怎么称呼你" required>
+          </div>
+          
+          <div class="form-group">
+            <label for="register-email">邮箱</label>
+            <input type="email" id="register-email" placeholder="your@email.com" required>
+          </div>
+          
+          <div class="form-group">
+            <label for="register-password">密码</label>
+            <input type="password" id="register-password" placeholder="至少 6 位密码" required minlength="6">
+          </div>
+          
+          <div class="form-group">
+            <label for="register-confirm">确认密码</label>
+            <input type="password" id="register-confirm" placeholder="再次输入密码" required>
+          </div>
+          
+          <button type="submit" class="btn btn-primary btn-lg">
+            <span class="btn-text">创建账号</span>
+            <span class="btn-loader hidden">
+              <span class="spinner"></span>
+            </span>
+          </button>
+        </form>
+        
+        <button id="show-login" class="btn btn-text">
+          已有账号？返回登录
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主应用页面 -->
+  <div id="app-page" class="page hidden">
+    <div class="app">
+      <!-- 头部 -->
+      <header class="header">
+        <div class="header-top">
+          <div class="user-info">
+            <div class="avatar" id="user-avatar">👤</div>
+            <div class="user-details">
+              <span class="greeting">早上好</span>
+              <h2 id="user-name">用户</h2>
+            </div>
+          </div>
+          <button id="logout-btn" class="btn-icon" title="退出登录">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              <polyline points="16 17 21 12 16 7"></polyline>
+              <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+          </button>
+        </div>
+        <p class="date" id="current-date">3 月 1 日 星期日</p>
+      </header>
+
+      <!-- 通知权限 -->
+      <div id="notification-banner" class="banner hidden">
+        <div class="banner-content">
+          <span class="banner-icon">🔔</span>
+          <span class="banner-text">开启通知提醒，不错过任何健康提示</span>
+        </div>
+        <button id="enable-notification" class="btn btn-sm">开启</button>
+      </div>
+
+      <!-- 健康数据卡片 -->
+      <section class="card health-data featured">
+        <div class="card-header">
+          <h2>📊 今日健康</h2>
+          <button id="sync-health" class="btn-icon btn-sm" title="同步数据">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon">🚶</div>
+            <div class="stat-value" id="steps-count">--</div>
+            <div class="stat-label">步数</div>
+            <div class="stat-goal">目标：8000</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">🔥</div>
+            <div class="stat-value" id="calories-count">--</div>
+            <div class="stat-label">卡路里</div>
+            <div class="stat-goal">目标：500</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">📏</div>
+            <div class="stat-value" id="distance-count">--</div>
+            <div class="stat-label">距离 (km)</div>
+            <div class="stat-goal">目标：5</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">⏱️</div>
+            <div class="stat-value" id="active-minutes">--</div>
+            <div class="stat-label">活动 (分钟)</div>
+            <div class="stat-goal">目标：30</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 进度环 -->
+      <section class="card progress-section">
+        <div class="card-header">
+          <h2>🎯 今日目标</h2>
+        </div>
+        <div class="progress-rings">
+          <div class="progress-ring-container">
+            <svg class="progress-ring" width="120" height="120">
+              <circle class="progress-ring-bg" cx="60" cy="60" r="52"/>
+              <circle class="progress-ring-fill" id="steps-progress" cx="60" cy="60" r="52"/>
+            </svg>
+            <div class="progress-center">
+              <span class="progress-value" id="steps-percent">0%</span>
+              <span class="progress-label">步数</span>
+            </div>
+          </div>
+          <div class="progress-ring-container">
+            <svg class="progress-ring" width="120" height="120">
+              <circle class="progress-ring-bg" cx="60" cy="60" r="52"/>
+              <circle class="progress-ring-fill" id="calories-progress" cx="60" cy="60" r="52"/>
+            </svg>
+            <div class="progress-center">
+              <span class="progress-value" id="calories-percent">0%</span>
+              <span class="progress-label">卡路里</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 提醒设置 -->
+      <section class="card reminders">
+        <div class="card-header">
+          <h2>⏰ 智能提醒</h2>
+          <span class="badge" id="active-reminders-count">4 个开启</span>
+        </div>
+        
+        <div class="reminder-list">
+          <div class="reminder-item">
+            <div class="reminder-icon-container">
+              <span class="reminder-icon">💧</span>
+            </div>
+            <div class="reminder-info">
+              <div class="reminder-name">喝水提醒</div>
+              <div class="reminder-desc">每 2 小时提醒你补充水分</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-water" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="reminder-item">
+            <div class="reminder-icon-container">
+              <span class="reminder-icon">🧘</span>
+            </div>
+            <div class="reminder-info">
+              <div class="reminder-name">起身活动</div>
+              <div class="reminder-desc">每小时提醒活动身体</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-move" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="reminder-item">
+            <div class="reminder-icon-container">
+              <span class="reminder-icon">👁️</span>
+            </div>
+            <div class="reminder-info">
+              <div class="reminder-name">眼睛休息</div>
+              <div class="reminder-desc">每 30 分钟保护视力</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-eyes" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="reminder-item">
+            <div class="reminder-icon-container">
+              <span class="reminder-icon">😴</span>
+            </div>
+            <div class="reminder-info">
+              <div class="reminder-name">睡觉提醒</div>
+              <div class="reminder-desc">晚上 11 点提醒你休息</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-sleep" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- 免打扰时段 -->
+      <section class="card dnd-mode">
+        <div class="card-header">
+          <h2>🌙 免打扰时段</h2>
+        </div>
+        <div class="time-range">
+          <div class="time-input">
+            <label>开始</label>
+            <input type="time" id="dnd-start" value="23:00">
+          </div>
+          <div class="time-divider">至</div>
+          <div class="time-input">
+            <label>结束</label>
+            <input type="time" id="dnd-end" value="07:00">
+          </div>
+        </div>
+        <p class="hint">此时间段内不会发送提醒</p>
+      </section>
+
+      <!-- 周统计 -->
+      <section class="card stats">
+        <div class="card-header">
+          <h2>📈 本周统计</h2>
+          <select class="stats-filter" id="stats-filter">
+            <option value="steps">步数</option>
+            <option value="calories">卡路里</option>
+            <option value="active">活动时长</option>
+          </select>
+        </div>
+        <div class="week-stats">
+          <div class="day-stat">
+            <span class="day-name">一</span>
+            <div class="day-bar"><div class="bar-fill" style="height: 65%"></div></div>
+          </div>
+          <div class="day-stat">
+            <span class="day-name">二</span>
+            <div class="day-bar"><div class="bar-fill" style="height: 80%"></div></div>
+          </div>
+          <div class="day-stat">
+            <span class="day-name">三</span>
+            <div class="day-bar"><div class="bar-fill" style="height: 45%"></div></div>
+          </div>
+          <div class="day-stat">
+            <span class="day-name">四</span>
+            <div class="day-bar"><div class="bar-fill" style="height: 90%"></div></div>
+          </div>
+          <div class="day-stat">
+            <span class="day-name">五</span>
+            <div class="day-bar"><div class="bar-fill" style="height: 70%"></div></div>
+          </div>
+          <div class="day-stat">
+            <span class="day-name">六</span>
+            <div class="day-bar"><div class="bar-fill" style="height: 55%"></div></div>
+          </div>
+          <div class="day-stat today">
+            <span class="day-name">日</span>
+            <div class="day-bar"><div class="bar-fill" style="height: 60%"></div></div>
+          </div>
+        </div>
+        <div class="stat-summary">
+          <div class="summary-item">
+            <span class="summary-label">连续达标</span>
+            <span class="summary-value" id="streak-days">3</span>
+            <span class="summary-unit">天</span>
+            <span class="summary-fire">🔥</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">本周平均</span>
+            <span class="summary-value" id="weekly-average">6,420</span>
+            <span class="summary-unit">步</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 底部 -->
+      <footer class="footer">
+        <p>Made with ❤️ for your health</p>
+        <p class="version">v1.1.0</p>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div id="toast-container" class="toast-container"></div>
 
   <script src="app.js"></script>
 </body>
